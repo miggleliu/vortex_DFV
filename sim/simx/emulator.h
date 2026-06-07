@@ -21,13 +21,11 @@
 #include "types.h"
 #include "instr.h"
 #ifdef EXT_TCU_ENABLE
-#include "tcu/tensor_unit.h"
+#include "tensor_unit.h"
 #endif
 #ifdef EXT_V_ENABLE
-#include "vpu/vec_unit.h"
+#include "vec_unit.h"
 #endif
-
-class DebugModule;  // Forward declaration (global scope)
 
 namespace vortex {
 
@@ -110,15 +108,6 @@ public:
 
   void dcache_write(const void* data, uint64_t addr, uint32_t size);
 
-  // Get warp by index (for debug module access)
-  warp_t& get_warp(uint32_t wid) {
-    return warps_.at(wid);
-  }
-
-  // Debug module interface
-  void set_debug_module(::DebugModule* dm);
-  ::DebugModule* get_debug_module() const;
-
 private:
 
   uint32_t fetch(uint32_t wid, uint64_t uuid);
@@ -155,7 +144,6 @@ private:
   const Arch& arch_;
   const DCRS& dcrs_;
   Core*       core_;
-  ::DebugModule* debug_module_;
 
   std::vector<warp_t> warps_;
   WarpMask    active_warps_;
@@ -166,11 +154,6 @@ private:
   uint32_t    ipdom_size_;
   Word        csr_mscratch_;
   wspawn_t    wspawn_;
-
-  // PC of the last warp to become inactive, used by the debug module to
-  // report the final PC when the program completes.
-  Word        last_inactive_warp_pc_ = 0;
-  bool        last_inactive_warp_pc_valid_ = false;
 
 #ifdef EXT_TCU_ENABLE
   TensorUnit::Ptr tensor_unit_;
