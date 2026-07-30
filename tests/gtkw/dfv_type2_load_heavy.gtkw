@@ -1,0 +1,72 @@
+[dumpfile] "run.vcd"
+[timestart] 0
+[size] 1920 1080
+[pos] -1 -1
+[treeopen] TOP.
+[treeopen] TOP.rtlsim_shim.
+[treeopen] TOP.rtlsim_shim.vortex.
+
+@420
+[color] 7
+--- STAGE 1: DFV FILL RSP GATE (gate holding fill rsp from reaching bank) ---
+@28
+[color] 5
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.g_cores[0].core.execute.sfu_unit.csr_unit.csr_data.dfv_stall_active_dcache_fill_rsp
+@28
+[color] 2
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_dfv_fill_gate[0].dfv_fill_gate.master_valid
+@28
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_dfv_fill_gate[0].dfv_fill_gate.slave_valid
+
+@420
+[color] 7
+--- STAGE 2: MSHR STATE (fills accumulate, cannot drain) ---
+@22
+[color] 5
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_banks[0].cache_bank.cache_mshr.valid_table
+@28
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_banks[0].cache_bank.mshr_alm_full
+@28
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_banks[0].cache_bank.mshr_empty
+@28
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_banks[0].cache_bank.mem_rsp_valid
+@28
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_banks[0].cache_bank.mem_rsp_fire
+
+@420
+[color] 7
+--- STAGE 3: CORE REQ BACKPRESSURE (bank stops accepting new loads) ---
+@28
+[color] 3
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_banks[0].cache_bank.core_req_valid
+@28
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_banks[0].cache_bank.core_req_ready
+@28
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.g_banks[0].cache_bank.mshr_pending_st0
+
+@420
+[color] 7
+--- STAGE 4: THROTTLE COUNTER (cycles without valid core req) ---
+@22
+[color] 2
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.dfv_core_req_throttle.ctr
+@28
+[color] 5
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.dcache.g_cache_wrap[0].cache_wrap.g_cache.cache.dfv_core_req_throttle.reached
+
+@420
+[color] 7
+--- STAGE 5: LSU BACKPRESSURE (dcache not accepting from core) ---
+@28
+[color] 3
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.g_cores[0].core.execute.lsu_unit.lsu_mem_if[0].req_valid
+@28
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.g_cores[0].core.execute.lsu_unit.lsu_mem_if[0].req_ready
+
+@420
+[color] 7
+--- STAGE 6: WARP SCHEDULER THROTTLE (warps stalled waiting for loads) ---
+@22
+[color] 5
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.g_cores[0].core.schedule.stalled_warps
+TOP.rtlsim_shim.vortex.g_clusters[0].cluster.g_sockets[0].socket.g_cores[0].core.schedule.active_warps

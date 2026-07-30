@@ -22,7 +22,7 @@
 #define VX_CSR_DFV_CTRL           0x7C0
 #define VX_CSR_DFV_ICACHE_FILL_REQ_STALL   0x7C1
 #define VX_CSR_DFV_RANDOM_SEED    0x7C2
-#define VX_CSR_DFV_SET_THRESHOLD   0x7C3
+#define VX_CSR_DFV_SET_THRESHOLD   0x7C3 // SET probability (32-bit): stall activates when lfsr1[31:0] < threshold
 #define VX_CSR_DFV_DCACHE_FILL_REQ_STALL   0x7C4
 #define VX_CSR_DFV_WRITEBACK_STALL 0x7C5 // Writeback stall enable (bit 0)
 #define VX_CSR_DFV_DCACHE_FILL_RSP_STALL      0x7C6 // Cache fill stall enable (bit 0)

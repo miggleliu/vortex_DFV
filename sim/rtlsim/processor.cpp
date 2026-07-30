@@ -180,7 +180,7 @@ public:
       if (++run_cycles % 10000 == 0) {
         std::cout << std::dec << timestamp << ": [sim] running... (" << run_cycles << " cycles)" << std::endl;
       }
-      if (run_cycles > 500000) {
+      if (run_cycles > 10000000) {
         std::cout << std::dec << timestamp << ": [sim] TIMEOUT waiting for idle" << std::endl;
         return;
       }

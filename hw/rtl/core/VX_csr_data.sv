@@ -100,7 +100,7 @@ import VX_fpu_pkg::*;
     reg dfv_ctrl_dcache_fill_rsp_stall = 1'b0;      // Initialize to 0 for simulation (1=enable LFSR-based cache fill stall)
     reg [31:0] dfv_random_seed = 32'h12345678;     // LFSR1 seed (set timing)
     reg [31:0] dfv_release_seed = 32'h87654321;   // LFSR2 seed (release timing)
-    reg [7:0] dfv_set_threshold = 8'd128;          // SET probability: activate stall when lfsr1 < threshold
+    reg [15:0] dfv_set_threshold = 16'hF000;         // SET probability: activate stall when lfsr1[15:0] < threshold (16-bit, 0xF000 ≈ 93.75%)
     reg [15:0] dfv_release_threshold = 16'd16;     // RELEASE probability: release when lfsr2[15:0] >= threshold
     reg dfv_release_forever = 1'b0;               // When 1: once released, stalls stay off permanently
     reg [15:0] dfv_throttle_thresh_r = 16'h1800;   // Throttle counter threshold
@@ -116,21 +116,28 @@ import VX_fpu_pkg::*;
     // All stall points use the same LFSR2 comparison for RELEASE (synchronized deactivation)
     //==========================================================================
 
-    // LFSR1: 32-bit Galois LFSR for stall SET decisions (per-point bits)
-    reg [31:0] dfv_lfsr1 = 32'h12345678;
+    // LFSR1: single 64-bit Galois LFSR (right-shift).
+    // Each stall point reads a different 16-bit window of the shared state:
+    //   [15:0]  = icache_fill_req
+    //   [31:16] = dcache_fill_req
+    //   [47:32] = dcache_fill_rsp
+    //   [63:48] = dcache_core_req
+    // Polynomial mask 64'hD000000000000001 (extends the original 32-bit 0xD0000001).
+    reg [63:0] dfv_lfsr1 = 64'h123456789ABCDEF0;
 
     always @(posedge clk) begin
         if (reset) begin
-            dfv_lfsr1 <= 32'h12345678;
+            dfv_lfsr1 <= 64'h123456789ABCDEF0;
         end else if (write_enable && write_addr == 12'h7C2) begin
-            dfv_lfsr1 <= write_data[31:0];
+            dfv_lfsr1 <= {write_data[31:0] ^ 32'hA5A5A5A5, write_data[31:0]};
         end else if (dfv_ctrl_enable) begin
-            dfv_lfsr1 <= {1'b0, dfv_lfsr1[31:1]} ^ (dfv_lfsr1[0] ? 32'hD0000001 : 32'h0);
+            dfv_lfsr1 <= {1'b0, dfv_lfsr1[63:1]} ^ (dfv_lfsr1[0] ? 64'hD000000000000001 : 64'h0);
         end
     end
 
-    // LFSR2: 32-bit Galois LFSR for stall RELEASE decisions (shared across all points)
-    // Uses different polynomial (0xB4000001) for decorrelated sequence
+    // LFSR2: 32-bit Galois LFSR for stall RELEASE decisions (shared across all points).
+    // Only the lower 16 bits are compared against the 16-bit release threshold.
+    // Uses polynomial 0xB4000001 for decorrelation from LFSR1.
     reg [31:0] dfv_lfsr2 = 32'h87654321;
 
     always @(posedge clk) begin
@@ -197,7 +204,7 @@ import VX_fpu_pkg::*;
             dfv_ctrl_dcache_fill_rsp_stall <= 1'b0;
             dfv_random_seed <= 32'h12345678;
             dfv_release_seed <= 32'h87654321;
-            dfv_set_threshold <= 8'd128;
+            dfv_set_threshold <= 16'hF000;
             dfv_release_threshold <= 16'd16;
             dfv_release_forever <= 1'b0;
             dfv_throttle_thresh_r <= 16'h1800;
@@ -237,8 +244,8 @@ import VX_fpu_pkg::*;
                 12'h7C2: begin  // VX_CSR_DFV_RANDOM_SEED (handled in LFSR always block)
                     dfv_random_seed <= write_data[31:0];
                 end
-                12'h7C3: begin  // VX_CSR_DFV_SET_THRESHOLD
-                    dfv_set_threshold <= write_data[7:0];
+                12'h7C3: begin  // VX_CSR_DFV_SET_THRESHOLD (16-bit)
+                    dfv_set_threshold <= write_data[15:0];
                 end
                 12'h7C4: begin  // VX_CSR_DFV_DCACHE_FILL_REQ_STALL (enable LFSR-based dcache req stall)
                     dfv_ctrl_dcache_fill_req_stall <= write_data[0];
@@ -484,18 +491,18 @@ import VX_fpu_pkg::*;
     wire dfv_release = dfv_release_raw;
     `UNUSED_VAR(dfv_release)
 
-    // Per-point SET conditions (independent, using different LFSR1 bit slices)
-    wire dfv_set_icache_fill_req      = dfv_ctrl_icache_fill_req_stall      && (dfv_lfsr1[7:0]   < dfv_set_threshold);
-    wire dfv_set_dcache_fill_req      = dfv_ctrl_dcache_fill_req_stall      && (dfv_lfsr1[15:8]  < dfv_set_threshold);
-    wire dfv_set_dcache_fill_req_core_req = dfv_ctrl_dcache_core_req_stall && (dfv_lfsr1[15:8]  < dfv_set_threshold);
-    wire dfv_set_wb          = dfv_ctrl_writeback_stall   && (dfv_lfsr1[23:16] < dfv_set_threshold);
-    wire dfv_set_dcache_fill_rsp        = dfv_ctrl_dcache_fill_rsp_stall        && (dfv_lfsr1[31:24] < dfv_set_threshold);
+    // Per-point SET conditions (each uses its own 16-bit LFSR1 slice)
+    wire dfv_set_icache_fill_req = dfv_ctrl_icache_fill_req_stall  && (dfv_lfsr1[15:0]  < dfv_set_threshold);
+    wire dfv_set_dcache_fill_req = dfv_ctrl_dcache_fill_req_stall  && (dfv_lfsr1[31:16] < dfv_set_threshold);
+    wire dfv_set_dcache_fill_rsp = dfv_ctrl_dcache_fill_rsp_stall  && (dfv_lfsr1[47:32] < dfv_set_threshold);
+    wire dfv_set_dcache_core_req = dfv_ctrl_dcache_core_req_stall  && (dfv_lfsr1[63:48] < dfv_set_threshold);
+    wire dfv_set_wb              = dfv_ctrl_writeback_stall         && (dfv_lfsr1[63:48] < dfv_set_threshold) && 1'b0; // always disabled
 
     // Set/release latches: once SET, stay active until per-point delayed RELEASE
     // When dfv_release_forever=1: once released, permanently stays off (cannot re-set)
     reg dfv_stall_active_icache_fill_req;
     reg dfv_stall_active_dcache_fill_req;
-    reg dfv_stall_active_dcache_fill_req_core_req;
+    reg dfv_stall_active_dcache_core_req;
     reg dfv_stall_active_wb;
     reg dfv_stall_active_dcache_fill_rsp;
     reg dfv_released_permanently;  // latches high after first release when release_forever=1
@@ -504,7 +511,7 @@ import VX_fpu_pkg::*;
         if (reset || !dfv_ctrl_enable) begin
             dfv_stall_active_icache_fill_req      <= 1'b0;
             dfv_stall_active_dcache_fill_req      <= 1'b0;
-            dfv_stall_active_dcache_fill_req_core_req <= 1'b0;
+            dfv_stall_active_dcache_core_req <= 1'b0;
             dfv_stall_active_wb          <= 1'b0;
             dfv_stall_active_dcache_fill_rsp        <= 1'b0;
             dfv_released_permanently <= 1'b0;
@@ -512,7 +519,7 @@ import VX_fpu_pkg::*;
             // Permanently released: all stalls forced off, no re-setting
             dfv_stall_active_icache_fill_req      <= 1'b0;
             dfv_stall_active_dcache_fill_req      <= 1'b0;
-            dfv_stall_active_dcache_fill_req_core_req <= 1'b0;
+            dfv_stall_active_dcache_core_req <= 1'b0;
             dfv_stall_active_wb          <= 1'b0;
             dfv_stall_active_dcache_fill_rsp   <= 1'b0;
         end else begin
@@ -535,9 +542,9 @@ import VX_fpu_pkg::*;
 
             // dcache core req (xbar level inside cache cluster)
             if (dfv_release_dcache_fill_req)
-                dfv_stall_active_dcache_fill_req_core_req <= 1'b0;
-            else if (!dfv_stall_active_dcache_fill_req_core_req && dfv_set_dcache_fill_req_core_req)
-                dfv_stall_active_dcache_fill_req_core_req <= 1'b1;
+                dfv_stall_active_dcache_core_req <= 1'b0;
+            else if (!dfv_stall_active_dcache_core_req && dfv_set_dcache_core_req)
+                dfv_stall_active_dcache_core_req <= 1'b1;
 
             // writeback
             if (dfv_release_wb)
@@ -555,7 +562,7 @@ import VX_fpu_pkg::*;
 
     assign dfv_stall_icache_fill_req        = dfv_stall_active_icache_fill_req;
     assign dfv_stall_dcache_fill_req        = dfv_stall_active_dcache_fill_req;
-    assign dfv_stall_dcache_core_req   = dfv_stall_active_dcache_fill_req_core_req;
+    assign dfv_stall_dcache_core_req   = dfv_stall_active_dcache_core_req;
     assign dfv_stall_writeback    = dfv_stall_active_wb;
     assign dfv_stall_dcache_fill_rsp         = dfv_stall_active_dcache_fill_rsp;
     assign dfv_fill_bank_mask     = dfv_fill_bank_mask_r;

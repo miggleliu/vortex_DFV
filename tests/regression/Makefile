@@ -21,6 +21,7 @@ all:
 	$(MAKE) -C sgemm2
 	$(MAKE) -C madmax
 	$(MAKE) -C stencil3d
+	$(MAKE) -C frontdoor_race
 
 run-simx:
 	$(MAKE) -C basic run-simx
@@ -42,6 +43,7 @@ run-simx:
 	$(MAKE) -C sgemm2 run-simx
 	$(MAKE) -C madmax run-simx
 	$(MAKE) -C stencil3d run-simx
+	$(MAKE) -C frontdoor_race run-simx
 
 run-rtlsim:
 	$(MAKE) -C basic run-rtlsim
@@ -63,6 +65,7 @@ run-rtlsim:
 	$(MAKE) -C sgemm2 run-rtlsim
 	$(MAKE) -C madmax run-rtlsim
 	$(MAKE) -C stencil3d run-rtlsim
+	$(MAKE) -C frontdoor_race run-rtlsim
 
 clean:
 	$(MAKE) -C basic clean
@@ -84,3 +87,4 @@ clean:
 	$(MAKE) -C sgemm2 clean
 	$(MAKE) -C madmax clean
 	$(MAKE) -C stencil3d clean
+	$(MAKE) -C frontdoor_race clean

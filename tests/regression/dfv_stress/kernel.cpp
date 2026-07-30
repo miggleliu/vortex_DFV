@@ -29,7 +29,7 @@ int main() {
         switch (phase) {
         case 0:
             // Phase 0: icache + dcache req stalls (L1 arbiter contention)
-            csr_write(VX_CSR_DFV_SET_THRESHOLD, 240);
+            csr_write(VX_CSR_DFV_SET_THRESHOLD, 0xF000);
             csr_write(VX_CSR_DFV_RELEASE_THRESHOLD, 240);
             csr_write(VX_CSR_DFV_RELEASE_DELAY, 0x0000);
             csr_write(VX_CSR_DFV_ICACHE_FILL_REQ_STALL, 1);
@@ -39,7 +39,7 @@ int main() {
             break;
         case 1:
             // Phase 1: dcache + fill stalls (cache bank contention)
-            csr_write(VX_CSR_DFV_SET_THRESHOLD, 240);
+            csr_write(VX_CSR_DFV_SET_THRESHOLD, 0xF000);
             csr_write(VX_CSR_DFV_RELEASE_THRESHOLD, 240);
             csr_write(VX_CSR_DFV_RELEASE_DELAY, 0x1000);
             csr_write(VX_CSR_DFV_ICACHE_FILL_REQ_STALL, 0);
@@ -49,7 +49,7 @@ int main() {
             break;
         case 2:
             // Phase 2: writeback + dcache (scoreboard pressure + memory)
-            csr_write(VX_CSR_DFV_SET_THRESHOLD, 200);
+            csr_write(VX_CSR_DFV_SET_THRESHOLD, 0xC800);
             csr_write(VX_CSR_DFV_RELEASE_THRESHOLD, 200);
             csr_write(VX_CSR_DFV_RELEASE_DELAY, 0x0000);
             csr_write(VX_CSR_DFV_ICACHE_FILL_REQ_STALL, 0);
@@ -59,7 +59,7 @@ int main() {
             break;
         case 3:
             // Phase 3: all stalls active (maximum stress)
-            csr_write(VX_CSR_DFV_SET_THRESHOLD, 240);
+            csr_write(VX_CSR_DFV_SET_THRESHOLD, 0xF000);
             csr_write(VX_CSR_DFV_RELEASE_THRESHOLD, 250);
             csr_write(VX_CSR_DFV_RELEASE_DELAY, 0x1000);
             csr_write(VX_CSR_DFV_ICACHE_FILL_REQ_STALL, 1);

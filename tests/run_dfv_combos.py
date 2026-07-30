@@ -42,11 +42,11 @@ STALL_TYPES = [
 # VX_CSR_DFV_WRITEBACK_STALL is excluded from STALL_TYPES and always forced to 0.
 
 # Defaults matching the normalized kernel.cpp baseline
-DEFAULT_SET_THRESHOLD      = 240
-DEFAULT_RELEASE_THRESHOLD  = 65504
+DEFAULT_SET_THRESHOLD      = 0x1000
+DEFAULT_RELEASE_THRESHOLD  = 0xF000
 DEFAULT_RELEASE_DELAY      = 0x1000
 DEFAULT_RELEASE_FOREVER    = 0
-DEFAULT_THROTTLE_THRESHOLD = 0x1800
+DEFAULT_THROTTLE_THRESHOLD = 0x2ED1 #0x1800
 DEFAULT_FILL_BANK_MASK     = 0xFFFF
 
 # Each combo dict supports:
@@ -62,35 +62,35 @@ DEFAULT_FILL_BANK_MASK     = 0xFFFF
 # Use faster release (threshold=240) so stalls cycle and produce many collision events
 COMBOS_TYPE1 = [
     {"stalls": (False, False, False, False), "label": "none",
-     "release_threshold": 61440, "release_forever": 0},
+     "release_threshold": 0xF000, "release_forever": 0},
     {"stalls": (True,  True,  False, False), "label": "icache_fill_req_N_dcache_fill_req",
-     "release_threshold": 61440, "release_forever": 0},
+     "release_threshold": 0xF000, "release_forever": 0},
     {"stalls": (False, False, True,  True),  "label": "dcache_fill_rsp_N_dcache_core_req",
-     "release_threshold": 61440, "release_forever": 0},
+     "release_threshold": 0xF000, "release_forever": 0},
 ]
 
 # Type 2: watch throttle counter — did the pipeline fully freeze?
 # Fill stall held until permanent release (release_forever=1); threshold 0x1800
 COMBOS_TYPE2 = [
     {"stalls": (False, False, False, False), "label": "none",
-    "release_threshold": 65520, "release_forever": 1},
+    "release_threshold": 0xFFF6, "release_forever": 1, "set_threshold": 0x0010},
     {"stalls": (True,  False, False, False), "label": "icache_fill_req_backpressure",
-    "release_threshold": 65520, "release_forever": 1},
+    "release_threshold": 0xFFF6, "release_forever": 1, "set_threshold": 0x0010},
     {"stalls": (False, False, True,  False), "label": "dcache_fill_rsp_backpressure",
-    "release_threshold": 65520, "release_forever": 1},
+    "release_threshold": 0xFFF6, "release_forever": 1, "set_threshold": 0x0010},
 ]
 
 # Type 3: asymmetric slowdown — stall only bank 0, let other banks proceed.
 # release_forever=0: stall cycles on/off via LFSR2 to create intermittent bank 0 pressure.
 COMBOS_TYPE3 = [
     {"stalls": (False, False, False, False), "label": "none",
-     "release_forever": 0, "release_threshold": 64000},
+     "release_threshold": 0xFA00, "release_forever": 0},
     {"stalls": (False, False, True,  False), "label": "dcache_fill_rsp_bank0_slowdown",
-     "fill_bank_mask": 0x1, "release_forever": 0, "release_threshold": 64000},
+     "fill_bank_mask": 0x1, "release_threshold": 0xFA00, "release_forever": 0},
     {"stalls": (False, False, True,  False), "label": "dcache_fill_rsp_bank01_slowdown",
-     "fill_bank_mask": 0x3, "release_forever": 0, "release_threshold": 64000},
+     "fill_bank_mask": 0x3, "release_threshold": 0xFA00, "release_forever": 0},
     {"stalls": (False, False, True,  False), "label": "dcache_fill_rsp_bank012_slowdown",
-     "fill_bank_mask": 0x7, "release_forever": 0, "release_threshold": 64000},
+     "fill_bank_mask": 0x7, "release_threshold": 0xFA00, "release_forever": 0},
 ]
 
 COMBOS = {1: COMBOS_TYPE1, 2: COMBOS_TYPE2, 3: COMBOS_TYPE3}[DFV_TEST_TYPE]
@@ -453,65 +453,81 @@ def main():
     # ------------------------------------------------------------------
     # Summary table
     # ------------------------------------------------------------------
+    app_w = max(len("APP"), max((len(r[0]) for r in perf_rows), default=0))
+    tag_w = max(len("COMBO"), max((len(r[1]) for r in perf_rows), default=0))
+
+    def _row_prefix(app, tag, instrs, cycles, ipc):
+        i_s = str(instrs) if instrs != -1 else "-"
+        c_s = str(cycles) if cycles != -1 else "-"
+        p_s = f"{ipc:.4f}" if ipc != -1.0 else "-"
+        return f"{app:<{app_w}} {tag:<{tag_w}} {i_s:>8} {c_s:>8} {p_s:>7}"
+
+    def _print_table(hdr, rows_fn):
+        width = max(len(hdr) + 2, 60)
+        print(f"\n{'=' * width}\n{hdr}\n{'-' * width}")
+        prev_app = None
+        for row in perf_rows:
+            app = row[0]
+            if prev_app is not None and app != prev_app:
+                print()           # blank line between app groups
+            prev_app = app
+            rows_fn(row)
+        print(f"{'=' * width}")
+
     if DFV_TEST_TYPE == 1:
-        # Show count and rate together: "N(r)" per counter
         coll_hdrs = [c[:10] for c in coll_cols]
-        hdr = f"{'APP':<14} {'COMBO':<16} {'INSTRS':>8} {'CYCLES':>8} {'IPC':>7}"
+        hdr = f"{'APP':<{app_w}} {'COMBO':<{tag_w}} {'INSTRS':>8} {'CYCLES':>8} {'IPC':>7}"
         for h in coll_hdrs:
             hdr += f" {h:>16}"
         hdr += " STATUS"
-        width = max(len(hdr) + 4, 60)
-        print(f"\n{'=' * width}\n{hdr}\n{'-' * width}")
-        for i, (app, tag, instrs, cycles, ipc, status, coll, _) in enumerate(perf_rows):
-            i_s = str(instrs) if instrs != -1 else "-"
-            c_s = str(cycles) if cycles != -1 else "-"
-            p_s = f"{ipc:.4f}" if ipc != -1.0 else "-"
-            line = f"{app:<14} {tag:<16} {i_s:>8} {c_s:>8} {p_s:>7}"
+
+        def _type1_row(row):
+            i, (app, tag, instrs, cycles, ipc, status, coll, _) = \
+                next((j, r) for j, r in enumerate(perf_rows) if r is row)
+            line = _row_prefix(app, tag, instrs, cycles, ipc)
             for c in coll_cols:
                 count = coll.get(c, -1)
                 rate  = coll_rates[i][c]
-                if count < 0:
-                    cell = "-"
-                elif rate >= 0:
-                    cell = f"{count}({rate:.2e})"
-                else:
-                    cell = str(count)
+                cell  = "-" if count < 0 else (f"{count}({rate:.2e})" if rate >= 0 else str(count))
                 line += f" {cell:>16}"
-            line += f" {status}"
-            print(line)
-        print(f"{'=' * width}")
+            print(line + f" {status}")
+
+        _print_table(hdr, _type1_row)
         print("  Column format: count(rate/cycle)")
 
     elif DFV_TEST_TYPE == 3:
-        hdr = (f"{'APP':<14} {'COMBO':<16} {'INSTRS':>8} {'CYCLES':>8}"
-               f" {'IPC':>7} {'IPC_BASE':>9} {'DROP%':>7} STATUS")
-        width = max(len(hdr) + 4, 60)
-        # Build per-app baseline lookup for display
         baseline_ipc = {}
         for app, tag, _, _, ipc, _, _, _ in perf_rows:
             if tag == "none" and ipc > 0:
                 baseline_ipc[app] = ipc
-        print(f"\n{'=' * width}\n{hdr}\n{'-' * width}")
-        for i, (app, tag, instrs, cycles, ipc, status, _, _) in enumerate(perf_rows):
-            i_s  = str(instrs) if instrs != -1 else "-"
-            c_s  = str(cycles) if cycles != -1 else "-"
-            p_s  = f"{ipc:.4f}" if ipc != -1.0 else "-"
-            b_s  = f"{baseline_ipc[app]:.4f}" if app in baseline_ipc else "-"
-            d_s  = f"{ipc_drops[i]:.2f}%" if ipc_drops[i] >= 0 else "-"
-            print(f"{app:<14} {tag:<16} {i_s:>8} {c_s:>8} {p_s:>7} {b_s:>9} {d_s:>7} {status}")
-        print(f"{'=' * width}")
+        hdr = (f"{'APP':<{app_w}} {'COMBO':<{tag_w}} {'INSTRS':>8} {'CYCLES':>8}"
+               f" {'IPC':>7} {'IPC_BASE':>9} {'DROP%':>8} STATUS")
+
+        def _type3_row(row):
+            i = perf_rows.index(row)
+            app, tag, instrs, cycles, ipc, status = row[:6]
+            b_s = f"{baseline_ipc[app]:.4f}" if app in baseline_ipc else "-"
+            d_s = f"{ipc_drops[i]:.2f}%" if ipc_drops[i] >= 0 else "-"
+            print(_row_prefix(app, tag, instrs, cycles, ipc)
+                  + f" {b_s:>9} {d_s:>8} {status}")
+
+        _print_table(hdr, _type3_row)
         print("  DROP%: (IPC_none - IPC_stalled) / IPC_none * 100")
 
     else:  # type 2
-        hdr = (f"{'APP':<14} {'COMBO':<16} {'INSTRS':>8} {'CYCLES':>8}"
-               f" {'IPC':>7} {'THR_REACHED':>12} STATUS")
-        width = max(len(hdr) + 4, 60)
+        hdr = (f"{'APP':<{app_w}} {'COMBO':<{tag_w}} {'INSTRS':>8} {'CYCLES':>8}"
+               f" {'IPC':>7} {'THR':>4} STATUS")
+        width = max(len(hdr) + 2, 60)
         print(f"\n{'=' * width}\n{hdr}\n{'-' * width}")
+        prev_app = None
         for app, tag, instrs, cycles, ipc, status, _, thr in perf_rows:
+            if prev_app is not None and app != prev_app:
+                print()
+            prev_app = app
             i_s = str(instrs) if instrs != -1 else "-"
             c_s = str(cycles) if cycles != -1 else "-"
             p_s = f"{ipc:.4f}" if ipc != -1.0 else "-"
-            print(f"{app:<14} {tag:<16} {i_s:>8} {c_s:>8} {p_s:>7} {thr:>12} {status}")
+            print(f"{app:<{app_w}} {tag:<{tag_w}} {i_s:>8} {c_s:>8} {p_s:>7} {thr:>4} {status}")
         print(f"{'=' * width}")
 
     print(f"Logs saved under {LOG_BASE}/")
