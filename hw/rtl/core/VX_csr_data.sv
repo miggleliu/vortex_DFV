@@ -78,7 +78,8 @@ import VX_fpu_pkg::*;
     output wire                         dfv_stall_writeback,
     output wire                         dfv_stall_dcache_fill_rsp,
     output wire [15:0]                   dfv_fill_bank_mask,
-    output wire [15:0]                  dfv_throttle_threshold
+    output wire [15:0]                  dfv_throttle_threshold,
+    output wire [15:0]                  dfv_bank_throttle_threshold
 );
 
     `UNUSED_VAR (reset)
@@ -103,8 +104,9 @@ import VX_fpu_pkg::*;
     reg [15:0] dfv_set_threshold = 16'hF000;         // SET probability: activate stall when lfsr1[15:0] < threshold (16-bit, 0xF000 ≈ 93.75%)
     reg [15:0] dfv_release_threshold = 16'd16;     // RELEASE probability: release when lfsr2[15:0] >= threshold
     reg dfv_release_forever = 1'b0;               // When 1: once released, stalls stay off permanently
-    reg [15:0] dfv_throttle_thresh_r = 16'h1800;   // Throttle counter threshold
+    reg [15:0] dfv_throttle_thresh_r = 16'h1800;   // Throttle counter threshold (Type 2, global full-freeze)
     reg [15:0]  dfv_fill_bank_mask_r  = 16'hFFFF;   // Fill gate per-bank enable bitmask (bit N = bank N)
+    reg [15:0] dfv_bank_throttle_thresh_r = 16'h0032; // Per-bank throttle threshold (Type 3, needs empirical calibration -- see tests/analyze_bank_throttle.py)
 
     //==========================================================================
     // DFV Dual-LFSR Architecture
@@ -209,6 +211,7 @@ import VX_fpu_pkg::*;
             dfv_release_forever <= 1'b0;
             dfv_throttle_thresh_r <= 16'h1800;
             dfv_fill_bank_mask_r  <= 16'hFFFF;
+            dfv_bank_throttle_thresh_r <= 16'h0032;
             dfv_release_delay_icache <= 4'd0;
             dfv_release_delay_dcache <= 4'd0;
             dfv_release_delay_wb     <= 4'd0;
@@ -280,6 +283,9 @@ import VX_fpu_pkg::*;
                 12'h7CD: begin  // VX_CSR_DFV_DCACHE_CORE_REQ_STALL
                     dfv_ctrl_dcache_core_req_stall <= write_data[0];
                 end
+                12'h7CE: begin  // VX_CSR_DFV_BANK_THROTTLE_THRESHOLD
+                    dfv_bank_throttle_thresh_r <= write_data[15:0];
+                end
                 default: begin
                     `ASSERT(0, ("%t: *** %s invalid CSR write address: %0h (#%0d)", $time, INSTANCE_ID, write_addr, write_uuid));
                 end
@@ -324,6 +330,7 @@ import VX_fpu_pkg::*;
             12'h7CB            : read_data_rw_w = `XLEN'(dfv_throttle_thresh_r);  // VX_CSR_DFV_THROTTLE_THRESHOLD
             12'h7CC            : read_data_rw_w = `XLEN'(dfv_fill_bank_mask_r);      // VX_CSR_DFV_FILL_BANK_MASK
             12'h7CD            : read_data_rw_w = `XLEN'(dfv_ctrl_dcache_core_req_stall); // VX_CSR_DFV_DCACHE_CORE_REQ_STALL
+            12'h7CE            : read_data_rw_w = `XLEN'(dfv_bank_throttle_thresh_r); // VX_CSR_DFV_BANK_THROTTLE_THRESHOLD
 
             `VX_CSR_WARP_ID    : read_data_ro_w = `XLEN'(read_wid);
             `VX_CSR_CORE_ID    : read_data_ro_w = `XLEN'(CORE_ID);
@@ -567,6 +574,7 @@ import VX_fpu_pkg::*;
     assign dfv_stall_dcache_fill_rsp         = dfv_stall_active_dcache_fill_rsp;
     assign dfv_fill_bank_mask     = dfv_fill_bank_mask_r;
     assign dfv_throttle_threshold = dfv_throttle_thresh_r;
+    assign dfv_bank_throttle_threshold = dfv_bank_throttle_thresh_r;
 
 
     `UNUSED_VAR (base_dcrs)

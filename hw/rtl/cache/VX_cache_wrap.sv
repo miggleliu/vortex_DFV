@@ -91,7 +91,8 @@ module VX_cache_wrap import VX_gpu_pkg::*; #(
     input wire              dfv_stall_dcache_fill_rsp,
     input wire [15:0]        dfv_fill_bank_mask,
     input wire              dfv_stall_dcache_core_req,
-    input wire [15:0]       dfv_throttle_threshold
+    input wire [15:0]       dfv_throttle_threshold,
+    input wire [15:0]       dfv_bank_throttle_threshold
 );
 
     `STATIC_ASSERT(NUM_BANKS == (1 << `CLOG2(NUM_BANKS)), ("invalid parameter"))
@@ -202,7 +203,8 @@ module VX_cache_wrap import VX_gpu_pkg::*; #(
             .dfv_stall_dcache_fill_rsp (dfv_stall_dcache_fill_rsp),
             .dfv_fill_bank_mask (dfv_fill_bank_mask),
             .dfv_stall_dcache_core_req (dfv_stall_dcache_core_req),
-            .dfv_throttle_threshold (dfv_throttle_threshold)
+            .dfv_throttle_threshold (dfv_throttle_threshold),
+            .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold)
         );
 
     end else begin : g_passthru
@@ -212,6 +214,7 @@ module VX_cache_wrap import VX_gpu_pkg::*; #(
         `UNUSED_VAR (dfv_fill_bank_mask)
         `UNUSED_VAR (dfv_stall_dcache_core_req)
         `UNUSED_VAR (dfv_throttle_threshold)
+        `UNUSED_VAR (dfv_bank_throttle_threshold)
 
         for (genvar i = 0; i < NUM_REQS; ++i) begin : g_core_bus_cache_if
             `UNUSED_VX_MEM_BUS_IF (core_bus_cache_if[i])

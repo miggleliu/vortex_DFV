@@ -83,7 +83,8 @@ module VX_cache import VX_gpu_pkg::*; #(
     input wire              dfv_stall_dcache_fill_rsp,
     input wire [15:0]        dfv_fill_bank_mask,
     input wire              dfv_stall_dcache_core_req,
-    input wire [15:0]       dfv_throttle_threshold
+    input wire [15:0]       dfv_throttle_threshold,
+    input wire [15:0]       dfv_bank_throttle_threshold
 );
 
     `STATIC_ASSERT(NUM_BANKS == (1 << `CLOG2(NUM_BANKS)), ("invalid parameter: number of banks must be power of 2"))
@@ -410,6 +411,7 @@ module VX_cache import VX_gpu_pkg::*; #(
     // Banks access ///////////////////////////////////////////////////////////
 
     // DFV: detect when no core request has been valid for threshold cycles
+    // (global -- used for Type 2 full-pipeline-freeze detection)
     if (DFV_THROTTLE_ENABLE) begin : g_dfv_throttle
         wire dfv_core_req_throttle_reached;
         `UNUSED_VAR (dfv_core_req_throttle_reached)
@@ -420,8 +422,28 @@ module VX_cache import VX_gpu_pkg::*; #(
             .threshold (dfv_throttle_threshold),
             .reached   (dfv_core_req_throttle_reached)
         );
+
+        // DFV Type 3: per-bank idle-cycle counters. Same module as the
+        // global one above, but its OWN dedicated dfv_bank_throttle_threshold
+        // CSR (independent of dfv_throttle_threshold) -- detects an
+        // anomalously long idle gap at ONE BANK specifically, calibrated to
+        // a much smaller value than the Type-2 full-freeze threshold. %m in
+        // the $display disambiguates which bank fired, same pattern already
+        // used by dfv_bank_ctr below in the g_banks loop.
+        for (genvar i = 0; i < NUM_BANKS; ++i) begin : g_dfv_bank_throttle
+            wire dfv_bank_throttle_reached;
+            `UNUSED_VAR (dfv_bank_throttle_reached)
+            VX_dfv_throttle_ctr dfv_bank_throttle (
+                .clk       (clk),
+                .reset     (reset),
+                .signal_in (per_bank_core_req_valid[i]),
+                .threshold (dfv_bank_throttle_threshold),
+                .reached   (dfv_bank_throttle_reached)
+            );
+        end
     end else begin : g_dfv_throttle_disabled
         `UNUSED_VAR (dfv_throttle_threshold)
+        `UNUSED_VAR (dfv_bank_throttle_threshold)
     end
 
     for (genvar bank_id = 0; bank_id < NUM_BANKS; ++bank_id) begin : g_banks

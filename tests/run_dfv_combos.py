@@ -28,10 +28,13 @@ LOG_BASE = os.path.join(VORTEX_ROOT, "logs")
 #         Use fill stall (all banks); DFV_THROTTLE_REACHED $display lines are the signal.
 #   3 = Asymmetric slowdown on multi-lane resources
 #         Fill stall enabled on bank 0 only; other banks proceed normally.
-#         Reports IPC reduction % vs. none baseline per app.
+#         Reports IPC reduction % vs. none baseline per app, AND how many
+#         times each bank's per-bank throttle counter reached its (smaller,
+#         separately-calibrated) threshold -- DFV_THROTTLE_REACHED $display
+#         lines from the g_dfv_bank_throttle[N] instances are the signal.
 #         release_forever disabled so stall cycles on/off via LFSR2.
 # =============================================================================
-DFV_TEST_TYPE = 2
+DFV_TEST_TYPE = 3
 
 STALL_TYPES = [
     ("icache",       "VX_CSR_DFV_ICACHE_FILL_REQ_STALL"),
@@ -42,21 +45,26 @@ STALL_TYPES = [
 # VX_CSR_DFV_WRITEBACK_STALL is excluded from STALL_TYPES and always forced to 0.
 
 # Defaults matching the normalized kernel.cpp baseline
-DEFAULT_SET_THRESHOLD      = 0x1000
+DEFAULT_SET_THRESHOLD      = 0x00F0
 DEFAULT_RELEASE_THRESHOLD  = 0xF000
 DEFAULT_RELEASE_DELAY      = 0x1000
 DEFAULT_RELEASE_FOREVER    = 0
 DEFAULT_THROTTLE_THRESHOLD = 0x2ED1 #0x1800
 DEFAULT_FILL_BANK_MASK     = 0xFFFF
+# Type 3 per-bank throttle threshold (separate CSR, 0x7CE) -- NOT yet calibrated.
+# This is the RTL reset placeholder value; calibrate against a stalls=none
+# baseline with tests/analyze_bank_throttle.py before trusting Type-3 results.
+DEFAULT_BANK_THROTTLE_THRESHOLD = 0x1800 #0x0100
 
 # Each combo dict supports:
-#   "stalls"             – tuple of bools, one per STALL_TYPES entry (required)
-#   "label"              – short name used in log filenames and CSV (optional)
-#   "set_threshold"      – VX_CSR_DFV_SET_THRESHOLD       (default 240)
-#   "release_threshold"  – VX_CSR_DFV_RELEASE_THRESHOLD   (default 65504)
-#   "release_delay"      – VX_CSR_DFV_RELEASE_DELAY       (default 0x1000)
-#   "release_forever"    – VX_CSR_DFV_RELEASE_FOREVER     (default 1)
-#   "throttle_threshold" – VX_CSR_DFV_THROTTLE_THRESHOLD  (default 0x1800)
+#   "stalls"                – tuple of bools, one per STALL_TYPES entry (required)
+#   "label"                 – short name used in log filenames and CSV (optional)
+#   "set_threshold"         – VX_CSR_DFV_SET_THRESHOLD              (default 240)
+#   "release_threshold"     – VX_CSR_DFV_RELEASE_THRESHOLD          (default 65504)
+#   "release_delay"         – VX_CSR_DFV_RELEASE_DELAY              (default 0x1000)
+#   "release_forever"       – VX_CSR_DFV_RELEASE_FOREVER            (default 1)
+#   "throttle_threshold"    – VX_CSR_DFV_THROTTLE_THRESHOLD         (default 0x1800, Type 2 global full-freeze)
+#   "bank_throttle_threshold" – VX_CSR_DFV_BANK_THROTTLE_THRESHOLD  (default 0x0032, Type 3 per-bank, uncalibrated)
 
 # Type 1: watch L1 arbiter/bank collision counters
 # Use faster release (threshold=240) so stalls cycle and produce many collision events
@@ -70,27 +78,33 @@ COMBOS_TYPE1 = [
 ]
 
 # Type 2: watch throttle counter — did the pipeline fully freeze?
-# Fill stall held until permanent release (release_forever=1); threshold 0x1800
+# release_forever=0: after a long stall releases, LFSR1 can SET the gate again
+# later in the same run (independent of the earlier release), producing
+# MULTIPLE long stalls per test instead of one held open forever. Each
+# individual stall is still reliably long (release_threshold near max, 0xFFF6)
+# so it independently crosses the throttle threshold before releasing.
+# extract_throttle_reached() already counts every occurrence, not just the
+# first, so no script-side change was needed beyond this CSR flip.
 COMBOS_TYPE2 = [
     {"stalls": (False, False, False, False), "label": "none",
-    "release_threshold": 0xFFF6, "release_forever": 1, "set_threshold": 0x0010},
+    "release_threshold": 0xFFF6, "release_forever": 0, "set_threshold": 0x0010},
     {"stalls": (True,  False, False, False), "label": "icache_fill_req_backpressure",
-    "release_threshold": 0xFFF6, "release_forever": 1, "set_threshold": 0x0010},
+    "release_threshold": 0xFFF6, "release_forever": 0, "set_threshold": 0x0010},
     {"stalls": (False, False, True,  False), "label": "dcache_fill_rsp_backpressure",
-    "release_threshold": 0xFFF6, "release_forever": 1, "set_threshold": 0x0010},
+    "release_threshold": 0xFFF6, "release_forever": 0, "set_threshold": 0x0010},
 ]
 
 # Type 3: asymmetric slowdown — stall only bank 0, let other banks proceed.
 # release_forever=0: stall cycles on/off via LFSR2 to create intermittent bank 0 pressure.
 COMBOS_TYPE3 = [
     {"stalls": (False, False, False, False), "label": "none",
-     "release_threshold": 0xFA00, "release_forever": 0},
+     "release_threshold": 0xFFF4, "release_forever": 0, "set_threshold": 0x0200},
     {"stalls": (False, False, True,  False), "label": "dcache_fill_rsp_bank0_slowdown",
-     "fill_bank_mask": 0x1, "release_threshold": 0xFA00, "release_forever": 0},
+     "fill_bank_mask": 0x1, "release_threshold": 0xFFF4, "release_forever": 0, "set_threshold": 0x1000},
     {"stalls": (False, False, True,  False), "label": "dcache_fill_rsp_bank01_slowdown",
-     "fill_bank_mask": 0x3, "release_threshold": 0xFA00, "release_forever": 0},
+     "fill_bank_mask": 0x3, "release_threshold": 0xFFF4, "release_forever": 0, "set_threshold": 0x1000},
     {"stalls": (False, False, True,  False), "label": "dcache_fill_rsp_bank012_slowdown",
-     "fill_bank_mask": 0x7, "release_threshold": 0xFA00, "release_forever": 0},
+     "fill_bank_mask": 0x7, "release_threshold": 0xFFF4, "release_forever": 0, "set_threshold": 0x1000},
 ]
 
 COMBOS = {1: COMBOS_TYPE1, 2: COMBOS_TYPE2, 3: COMBOS_TYPE3}[DFV_TEST_TYPE]
@@ -142,6 +156,7 @@ def patch_kernel(app, combo_dict):
     rel_forev  = combo_dict.get("release_forever",    DEFAULT_RELEASE_FOREVER)
     thr_thresh = combo_dict.get("throttle_threshold", DEFAULT_THROTTLE_THRESHOLD)
     bank_mask  = combo_dict.get("fill_bank_mask",     DEFAULT_FILL_BANK_MASK)
+    bank_thr_thresh = combo_dict.get("bank_throttle_threshold", DEFAULT_BANK_THROTTLE_THRESHOLD)
 
     for (_, csr_macro), enabled in zip(STALL_TYPES, stalls):
         pattern = rf"(csr_write\({csr_macro},\s*)\d(\))"
@@ -154,6 +169,7 @@ def patch_kernel(app, combo_dict):
         ("VX_CSR_DFV_RELEASE_FOREVER",    rel_forev),
         ("VX_CSR_DFV_THROTTLE_THRESHOLD", thr_thresh),
         ("VX_CSR_DFV_FILL_BANK_MASK",     bank_mask),
+        ("VX_CSR_DFV_BANK_THROTTLE_THRESHOLD", bank_thr_thresh),
         ("VX_CSR_DFV_WRITEBACK_STALL",    0),          # always disabled
     ]:
         pattern = rf"(csr_write\({csr_name},\s*)[^)]+(\))"
@@ -167,47 +183,114 @@ def patch_kernel(app, combo_dict):
 # Log parsing
 # =============================================================================
 
-def extract_collisions(lines):
-    """Extract last collision count for each counter from log lines (type 1)."""
-    results = {}
+def _scan_collision_line(line, out):
+    """Match one log line against the collision-counter $display formats,
+    updating out[key] with the reported (cumulative) edge_count."""
+    m = re.search(r"DFV_COLLISION_NATURAL:.*dfv_l1_arb_ctr\s+edge_count=(\d+)", line)
+    if m:
+        out["natural_l1_arb"] = int(m.group(1))
+    m = re.search(r"DFV_COLLISION_DFV:.*dfv_l1_arb_ctr\s+edge_count=(\d+)", line)
+    if m:
+        out["dfv_l1_arb"] = int(m.group(1))
+    m = re.search(
+        r"DFV_COLLISION_NATURAL:.*dcache.*g_banks\[(\d+)\]\.dfv_bank_ctr\s+edge_count=(\d+)", line
+    )
+    if m:
+        out[f"natural_bank{m.group(1)}"] = int(m.group(2))
+    m = re.search(
+        r"DFV_COLLISION_DFV:.*dcache.*g_banks\[(\d+)\]\.dfv_bank_ctr\s+edge_count=(\d+)", line
+    )
+    if m:
+        out[f"dfv_bank{m.group(1)}"] = int(m.group(2))
+
+
+def extract_collisions(lines, start_line=None):
+    """Extract collision counts for each counter (type 1), counting only
+    collisions accumulated after the kernel's DFV_TEST_START print.
+
+    natural_edge_count/dfv_edge_count (VX_dfv_collision_ctr) are cumulative,
+    saturating counters -- they do NOT reset at DFV_TEST_START, they just
+    keep incrementing. So "only count events after the marker" means
+    (value at end of run) - (value already accumulated at/before the
+    marker), not simply ignoring log lines before the marker (which
+    wouldn't remove their contribution to the running total). Note: if a
+    counter saturates (12-bit, caps at 4095) before the marker and stays
+    saturated after, this delta will under-report -- a pre-existing
+    limitation of the RTL counter's saturation, not something this
+    filtering introduces or can fix.
+    """
+    baseline = {}  # value of each counter at/before start_line (setup-stage total)
+    final = {}     # value of each counter across the whole log (final total)
+    for i, line in enumerate(lines):
+        _scan_collision_line(line, final)
+        if start_line is not None and i <= start_line:
+            _scan_collision_line(line, baseline)
+
+    if start_line is not None:
+        results = {k: v - baseline.get(k, 0) for k, v in final.items()}
+    else:
+        results = dict(final)
+
+    # Appended summary lines from a previous trim -- already the final
+    # answer from an earlier run of this script, use as-is
     for line in lines:
-        m = re.search(r"DFV_COLLISION_NATURAL:.*dfv_l1_arb_ctr\s+edge_count=(\d+)", line)
-        if m:
-            results["natural_l1_arb"] = int(m.group(1))
-        m = re.search(r"DFV_COLLISION_DFV:.*dfv_l1_arb_ctr\s+edge_count=(\d+)", line)
-        if m:
-            results["dfv_l1_arb"] = int(m.group(1))
-        m = re.search(
-            r"DFV_COLLISION_NATURAL:.*dcache.*g_banks\[(\d+)\]\.dfv_bank_ctr\s+edge_count=(\d+)", line
-        )
-        if m:
-            results[f"natural_bank{m.group(1)}"] = int(m.group(2))
-        m = re.search(
-            r"DFV_COLLISION_DFV:.*dcache.*g_banks\[(\d+)\]\.dfv_bank_ctr\s+edge_count=(\d+)", line
-        )
-        if m:
-            results[f"dfv_bank{m.group(1)}"] = int(m.group(2))
-        # Appended summary lines from a previous trim
         m = re.search(r"COLLISION:\s+(\w+)=(\d+)", line)
         if m:
             results[m.group(1)] = int(m.group(2))
     return results
 
 
-def extract_throttle_reached(lines):
-    """Count how many times the throttle counter fired (type 2).
+def find_test_start_line(lines):
+    """Return the index of the LAST 'DFV_TEST_START' line, or None if not
+    found (shouldn't happen for any app with the standard DFV setup block --
+    every combo, including 'none', prints this via kernel.cpp's vx_printf
+    right after the CSR setup block, right before vx_spawn_threads).
+
+    Everything at or before this line is device/kernel setup (boot, DCR
+    programming, the CSR write sequence itself) -- not part of the actual
+    test sequence, and should not be counted. Using line POSITION rather
+    than a $time value: vx_printf output has no RTL timestamp prefix, but it
+    lands in the same run.log stream as the RTL $display lines in real
+    execution order, so position-in-file is a valid ordering proxy. Using
+    the LAST occurrence in case a line appears more than once for some
+    reason (defensive; the standard kernel.cpp block prints it exactly once).
+    """
+    start = None
+    for i, line in enumerate(lines):
+        if "DFV_TEST_START" in line:
+            start = i
+    return start
+
+
+def extract_throttle_reached(lines, start_line=None):
+    """Count how many times the GLOBAL throttle counter fired (type 2).
 
     Filters out the spurious init-time fire that occurs before the CSR is
     programmed: at reset, threshold_buf=0 so the counter fires immediately
     with threshold=0 in the $display output.
+
+    Also excludes the per-bank g_dfv_bank_throttle[N] instances (type 3) --
+    those are always active whenever DFV_THROTTLE_ENABLE=1 (i.e. regardless
+    of which test type is running), and would trivially fire during a type-2
+    full-freeze too, since every bank being frozen also exceeds each bank's
+    own much smaller per-bank threshold. Counting them here would inflate
+    the type-2 signal with an unrelated type-3 one.
+
+    If start_line is given, events at or before that line index (setup-stage,
+    before the kernel's DFV_TEST_START print) are excluded -- see
+    find_test_start_line().
     """
     count = 0
-    for line in lines:
+    for i, line in enumerate(lines):
         if "DFV_THROTTLE_REACHED" not in line:
             continue
+        if "g_dfv_bank_throttle[" in line:
+            continue  # per-bank instance -- not the global (type 2) signal
         m = re.search(r"threshold=(\d+)", line)
         if m and int(m.group(1)) == 0:
             continue  # skip init-time spurious fire
+        if start_line is not None and i <= start_line:
+            continue  # setup-stage event, before the test sequence started
         count += 1
     # Also pick up appended summary line from a previous trim
     for line in lines:
@@ -215,6 +298,37 @@ def extract_throttle_reached(lines):
         if m:
             count = int(m.group(1))
     return count
+
+
+def extract_bank_throttle(lines, start_line=None):
+    """Count how many times each bank's per-bank throttle counter fired (type 3).
+
+    Per-bank instances show up as ...g_dfv_bank_throttle[N].dfv_bank_throttle
+    in the $display's %m hierarchical path. Same init-time spurious-fire
+    filter as extract_throttle_reached (threshold=0 at reset, before the CSR
+    is programmed), and the same start_line setup-stage filter -- see
+    find_test_start_line().
+    """
+    counts = {}
+    for i, line in enumerate(lines):
+        if "DFV_THROTTLE_REACHED" not in line:
+            continue
+        m = re.search(r"threshold=(\d+)", line)
+        if m and int(m.group(1)) == 0:
+            continue  # skip init-time spurious fire
+        bm = re.search(r"g_dfv_bank_throttle\[(\d+)\]", line)
+        if not bm:
+            continue  # the global (non-per-bank) instance -- not a Type-3 signal
+        if start_line is not None and i <= start_line:
+            continue  # setup-stage event, before the test sequence started
+        bank = int(bm.group(1))
+        counts[bank] = counts.get(bank, 0) + 1
+    # Also pick up appended summary lines from a previous trim
+    for line in lines:
+        m = re.search(r"BANK_THROTTLE_REACHED:\s*bank(\d+)=(\d+)", line)
+        if m:
+            counts[int(m.group(1))] = int(m.group(2))
+    return counts
 
 
 def extract_perf(lines):
@@ -233,14 +347,21 @@ def trim_log(path, keep=200):
 
     sig_mismatch = any(line.lower().startswith("error at result") for line in all_lines)
 
+    # DFV_TEST_START is printed by kernel.cpp (vx_printf) right after the CSR
+    # setup block, right before vx_spawn_threads -- for EVERY combo, including
+    # 'none', so unlike an RTL-only marker this gives a fair setup/test
+    # boundary across all combos, not just the ones that enable a stall.
+    start_line = find_test_start_line(all_lines)
+
     if DFV_TEST_TYPE == 1:
-        collisions       = extract_collisions(all_lines)
+        collisions       = extract_collisions(all_lines, start_line)
         throttle_reached = 0
     elif DFV_TEST_TYPE == 2:
         collisions       = {}
-        throttle_reached = extract_throttle_reached(all_lines)
-    else:  # type 3: IPC drop only, no throttle counter
-        collisions       = {}
+        throttle_reached = extract_throttle_reached(all_lines, start_line)
+    else:  # type 3: per-bank throttle-reached counts (reuses the "collisions"
+           # dict slot: {bank_index: count}), plus IPC drop computed post-run
+        collisions       = extract_bank_throttle(all_lines, start_line)
         throttle_reached = 0
 
     tail = all_lines[-keep:]
@@ -250,6 +371,9 @@ def trim_log(path, keep=200):
             tail.append(f"COLLISION: {key}={val}\n")
     elif DFV_TEST_TYPE == 2:
         tail.append(f"THROTTLE_REACHED: {throttle_reached}\n")
+    elif DFV_TEST_TYPE == 3:
+        for bank, val in sorted(collisions.items()):
+            tail.append(f"BANK_THROTTLE_REACHED: bank{bank}={val}\n")
     if sig_mismatch:
         tail.append("SIGMISMATCH: true\n")
 
@@ -286,6 +410,7 @@ def combo_desc(combo_dict):
         ("release_forever",    DEFAULT_RELEASE_FOREVER,    lambda v: f"forever={v}"),
         ("throttle_threshold", DEFAULT_THROTTLE_THRESHOLD, lambda v: f"throttle=0x{v:X}"),
         ("fill_bank_mask",     DEFAULT_FILL_BANK_MASK,     lambda v: f"bank_mask=0x{v:04X}"),
+        ("bank_throttle_threshold", DEFAULT_BANK_THROTTLE_THRESHOLD, lambda v: f"bank_throttle=0x{v:X}"),
     ]:
         if key in combo_dict and combo_dict[key] != default:
             extras.append(fmt(combo_dict[key]))
@@ -324,6 +449,14 @@ def compute_collision_rates(perf_rows, coll_cols):
             row_rates[c] = count / cycles if (count >= 0 and cycles > 0) else -1.0
         rates.append(row_rates)
     return rates
+
+
+def get_bank_throttle_columns(perf_rows):
+    """Return sorted list of bank indices seen across all type-3 rows."""
+    banks = set()
+    for row in perf_rows:
+        banks.update(row[6].keys())  # per-bank throttle-reached dict at index 6
+    return sorted(banks)
 
 
 def compute_ipc_drops(perf_rows):
@@ -399,7 +532,9 @@ def main():
                 coll_str = " ".join(f"{k}={v}" for k, v in sorted(collisions.items()))
                 extra = f"[{coll_str}]" if coll_str else "[]"
             elif DFV_TEST_TYPE == 3:
-                extra = "[ipc_drop computed post-run]"
+                bt_str = " ".join(f"bank{k}={v}" for k, v in sorted(collisions.items()))
+                extra = f"[throttle_reached: {bt_str}; ipc_drop computed post-run]" if bt_str \
+                        else "[throttle_reached: none; ipc_drop computed post-run]"
             else:
                 extra = f"[throttle_reached={throttle_reached}]"
 
@@ -421,6 +556,7 @@ def main():
         rate_cols  = [f"{c}_rate" for c in coll_cols]
     elif DFV_TEST_TYPE == 3:
         ipc_drops = compute_ipc_drops(perf_rows)
+        bank_cols = get_bank_throttle_columns(perf_rows)
 
     # ------------------------------------------------------------------
     # CSV output
@@ -438,11 +574,13 @@ def main():
                 w.writerow(row)
         elif DFV_TEST_TYPE == 3:
             w.writerow(["app", "stall_combo", "instrs", "cycles", "IPC", "status",
-                        "ipc_drop_pct"])
-            for i, (app, tag, instrs, cycles, ipc, status, _, _) in enumerate(perf_rows):
+                        "ipc_drop_pct"] + [f"bank{b}_throttle_reached" for b in bank_cols])
+            for i, (app, tag, instrs, cycles, ipc, status, bank_thr, _) in enumerate(perf_rows):
                 drop = ipc_drops[i]
                 drop_s = f"{drop:.2f}" if drop >= 0 else -1
-                w.writerow([app, tag, instrs, cycles, ipc, status, drop_s])
+                row = [app, tag, instrs, cycles, ipc, status, drop_s]
+                row += [bank_thr.get(b, 0) for b in bank_cols]
+                w.writerow(row)
         else:  # type 2
             w.writerow(["app", "stall_combo", "instrs", "cycles", "IPC", "status",
                         "throttle_reached"])
@@ -500,19 +638,26 @@ def main():
         for app, tag, _, _, ipc, _, _, _ in perf_rows:
             if tag == "none" and ipc > 0:
                 baseline_ipc[app] = ipc
+        bank_hdrs = [f"bank{b}" for b in bank_cols]
         hdr = (f"{'APP':<{app_w}} {'COMBO':<{tag_w}} {'INSTRS':>8} {'CYCLES':>8}"
-               f" {'IPC':>7} {'IPC_BASE':>9} {'DROP%':>8} STATUS")
+               f" {'IPC':>7} {'IPC_BASE':>9} {'DROP%':>8}")
+        for h in bank_hdrs:
+            hdr += f" {h:>8}"
+        hdr += " STATUS"
 
         def _type3_row(row):
             i = perf_rows.index(row)
-            app, tag, instrs, cycles, ipc, status = row[:6]
+            app, tag, instrs, cycles, ipc, status, bank_thr = row[:7]
             b_s = f"{baseline_ipc[app]:.4f}" if app in baseline_ipc else "-"
             d_s = f"{ipc_drops[i]:.2f}%" if ipc_drops[i] >= 0 else "-"
-            print(_row_prefix(app, tag, instrs, cycles, ipc)
-                  + f" {b_s:>9} {d_s:>8} {status}")
+            line = _row_prefix(app, tag, instrs, cycles, ipc) + f" {b_s:>9} {d_s:>8}"
+            for b in bank_cols:
+                line += f" {bank_thr.get(b, 0):>8}"
+            print(line + f" {status}")
 
         _print_table(hdr, _type3_row)
         print("  DROP%: (IPC_none - IPC_stalled) / IPC_none * 100")
+        print("  bankN: number of times that bank's per-bank throttle threshold was reached")
 
     else:  # type 2
         hdr = (f"{'APP':<{app_w}} {'COMBO':<{tag_w}} {'INSTRS':>8} {'CYCLES':>8}"

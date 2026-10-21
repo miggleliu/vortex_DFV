@@ -51,7 +51,8 @@ module VX_core import VX_gpu_pkg::*; #(
     output wire             dfv_stall_dcache_core_req_out,
     output wire             dfv_enable_out,
     output wire [15:0]       dfv_fill_bank_mask_out,
-    output wire [15:0]      dfv_throttle_threshold_out
+    output wire [15:0]      dfv_throttle_threshold_out,
+    output wire [15:0]      dfv_bank_throttle_threshold_out
 );
     VX_schedule_if      schedule_if();
     VX_fetch_if         fetch_if();
@@ -75,6 +76,7 @@ module VX_core import VX_gpu_pkg::*; #(
     wire dfv_stall_dcache_fill_rsp;
     wire [15:0]  dfv_fill_bank_mask;
     wire [15:0] dfv_throttle_threshold;
+    wire [15:0] dfv_bank_throttle_threshold;
 
     assign dfv_stall_dcache_fill_rsp_out         = dfv_stall_dcache_fill_rsp;
     assign dfv_stall_icache_fill_req_out        = dfv_stall_icache_fill_req;
@@ -83,6 +85,7 @@ module VX_core import VX_gpu_pkg::*; #(
     assign dfv_enable_out             = dfv_enable;
     assign dfv_fill_bank_mask_out     = dfv_fill_bank_mask;
     assign dfv_throttle_threshold_out = dfv_throttle_threshold;
+    assign dfv_bank_throttle_threshold_out = dfv_bank_throttle_threshold;
 
     VX_dispatch_if      dispatch_if[NUM_EX_UNITS * `ISSUE_WIDTH]();
     VX_commit_if        commit_if[NUM_EX_UNITS * `ISSUE_WIDTH]();
@@ -224,7 +227,8 @@ module VX_core import VX_gpu_pkg::*; #(
         .dfv_stall_writeback (dfv_stall_writeback),
         .dfv_stall_dcache_fill_rsp (dfv_stall_dcache_fill_rsp),
         .dfv_fill_bank_mask (dfv_fill_bank_mask),
-        .dfv_throttle_threshold (dfv_throttle_threshold)
+        .dfv_throttle_threshold (dfv_throttle_threshold),
+        .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold)
     );
 
     VX_commit #(

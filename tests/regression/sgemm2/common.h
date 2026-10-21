@@ -23,6 +23,7 @@
 #define VX_CSR_DFV_THROTTLE_THRESHOLD 0x7CB // Throttle counter threshold (16-bit)
 #define VX_CSR_DFV_FILL_BANK_MASK   0x7CC // Fill gate per-bank enable bitmask (bit N = bank N)
 #define VX_CSR_DFV_DCACHE_CORE_REQ_STALL 0x7CD // Dcache core req gate inside cache cluster (xbar level)
+#define VX_CSR_DFV_BANK_THROTTLE_THRESHOLD 0x7CE // Per-bank throttle threshold (Type 3), separate from global 0x7CB
 
 typedef struct {
   uint32_t grid_dim[2];

@@ -1,5 +1,6 @@
 #include "common.h"
 #include <vx_spawn.h>
+#include <vx_print.h>
 #include <vx_tensor.h>
 
 namespace vt = vortex::tensor;
@@ -60,12 +61,14 @@ int main() {
         csr_write(VX_CSR_DFV_RELEASE_DELAY, 0x1000);
         csr_write(VX_CSR_DFV_RELEASE_FOREVER, 1);
         csr_write(VX_CSR_DFV_THROTTLE_THRESHOLD, 0x1800);
+        csr_write(VX_CSR_DFV_BANK_THROTTLE_THRESHOLD, 0x0032);  // Type 3 per-bank threshold; needs calibration, see tests/analyze_bank_throttle.py
         csr_write(VX_CSR_DFV_FILL_BANK_MASK, 0xFFFF);
         csr_write(VX_CSR_DFV_DCACHE_CORE_REQ_STALL, 0);
         csr_write(VX_CSR_DFV_ICACHE_FILL_REQ_STALL, 0);
         csr_write(VX_CSR_DFV_DCACHE_FILL_REQ_STALL, 0);
         csr_write(VX_CSR_DFV_WRITEBACK_STALL, 0);
         csr_write(VX_CSR_DFV_DCACHE_FILL_RSP_STALL, 1);
+        vx_printf("DFV_TEST_START\n");
     }
   int __ret = vx_spawn_threads(2, arg->grid_dim, arg->block_dim, (vx_kernel_func_cb)kernel_body, arg);
   if (arg->enable_dfv_test) {

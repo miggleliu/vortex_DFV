@@ -181,7 +181,8 @@ module VX_cache_top import VX_gpu_pkg::*; #(
         .dfv_stall_dcache_fill_rsp (1'b0),
         .dfv_fill_bank_mask (16'hFFFF),
         .dfv_stall_dcache_core_req (1'b0),
-        .dfv_throttle_threshold (16'd0)
+        .dfv_throttle_threshold (16'd0),
+        .dfv_bank_throttle_threshold (16'd0)
     );
 
 endmodule

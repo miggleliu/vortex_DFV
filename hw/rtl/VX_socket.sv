@@ -120,7 +120,8 @@ module VX_socket import VX_gpu_pkg::*; #(
         .dfv_stall_dcache_fill_rsp     (1'b0),
         .dfv_fill_bank_mask (16'hFFFF),
         .dfv_stall_dcache_core_req (1'b0),
-        .dfv_throttle_threshold (16'd0)
+        .dfv_throttle_threshold (16'd0),
+        .dfv_bank_throttle_threshold (16'd0)
     );
 
     ///////////////////////////////////////////////////////////////////////////
@@ -144,6 +145,7 @@ module VX_socket import VX_gpu_pkg::*; #(
     wire [`SOCKET_SIZE-1:0] per_core_dfv_stall_dcache_core_req;
     wire [`SOCKET_SIZE-1:0] per_core_dfv_enable;
     wire [15:0] per_core_dfv_throttle_threshold [`SOCKET_SIZE];
+    wire [15:0] per_core_dfv_bank_throttle_threshold [`SOCKET_SIZE];
     wire [15:0]  per_core_dfv_fill_bank_mask [`SOCKET_SIZE];
     wire dfv_stall_dcache_fill_rsp_any            = |per_core_dfv_stall_dcache_fill_rsp;
     wire dfv_stall_icache_fill_req_any      = |per_core_dfv_stall_icache_fill_req;
@@ -151,6 +153,7 @@ module VX_socket import VX_gpu_pkg::*; #(
     wire dfv_stall_dcache_core_req_any = |per_core_dfv_stall_dcache_core_req;
     wire dfv_enable_any                = |per_core_dfv_enable;
     wire [15:0] dfv_throttle_threshold_val = per_core_dfv_throttle_threshold[0];
+    wire [15:0] dfv_bank_throttle_threshold_val = per_core_dfv_bank_throttle_threshold[0];
     wire [15:0]  dfv_fill_bank_mask_val     = per_core_dfv_fill_bank_mask[0];
 
     VX_cache_cluster #(
@@ -190,7 +193,8 @@ module VX_socket import VX_gpu_pkg::*; #(
         .dfv_stall_dcache_fill_rsp (dfv_stall_dcache_fill_rsp_any),
         .dfv_fill_bank_mask (dfv_fill_bank_mask_val),
         .dfv_stall_dcache_core_req (dfv_stall_dcache_core_req_any),
-        .dfv_throttle_threshold (dfv_throttle_threshold_val)
+        .dfv_throttle_threshold (dfv_throttle_threshold_val),
+        .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold_val)
     );
 
     ///////////////////////////////////////////////////////////////////////////
@@ -335,7 +339,8 @@ module VX_socket import VX_gpu_pkg::*; #(
             .dfv_stall_dcache_core_req_out (per_core_dfv_stall_dcache_core_req[core_id]),
             .dfv_enable_out             (per_core_dfv_enable[core_id]),
             .dfv_fill_bank_mask_out     (per_core_dfv_fill_bank_mask[core_id]),
-            .dfv_throttle_threshold_out (per_core_dfv_throttle_threshold[core_id])
+            .dfv_throttle_threshold_out (per_core_dfv_throttle_threshold[core_id]),
+            .dfv_bank_throttle_threshold_out (per_core_dfv_bank_throttle_threshold[core_id])
         );
     end
 
