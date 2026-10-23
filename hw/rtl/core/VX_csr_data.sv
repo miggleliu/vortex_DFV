@@ -356,7 +356,7 @@ import VX_fpu_pkg::*;
             `VX_CSR_DFV_COLL_DFV     : read_data_ro_w = `XLEN'(collision_snapshot.dfv_count);
             `VX_CSR_DFV_COLL_STATUS  : read_data_ro_w = `XLEN'(collision_status);
             `VX_CSR_DFV_COLL_CYCLE_LO: read_data_ro_w = `XLEN'(32'(collision_cycles));
-            `VX_CSR_DFV_COLL_CYCLE_HI: read_data_ro_w = `XLEN'(collision_cycles >> 32);
+            `VX_CSR_DFV_COLL_CYCLE_HI: read_data_ro_w = `XLEN'(collision_cycles[PERF_CTR_BITS-1:32]);
 
             // DFV CSRs
             12'h7C0            : read_data_rw_w = `XLEN'(dfv_ctrl_enable);       // VX_CSR_DFV_CTRL

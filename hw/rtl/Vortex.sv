@@ -111,7 +111,7 @@ module Vortex import VX_gpu_pkg::*; (
         .dfv_stall_dcache_core_req (1'b0),
         .dfv_throttle_threshold (16'd0),
         .dfv_bank_throttle_threshold (16'd0),
-        .dfv_collision ()
+        `UNUSED_PIN (dfv_collision)
     );
 
     for (genvar i = 0; i < `L3_MEM_PORTS; ++i) begin : g_mem_bus_if
