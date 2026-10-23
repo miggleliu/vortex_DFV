@@ -79,7 +79,9 @@ import VX_fpu_pkg::*;
     output wire                         dfv_stall_dcache_fill_rsp,
     output wire [15:0]                   dfv_fill_bank_mask,
     output wire [15:0]                  dfv_throttle_threshold,
-    output wire [15:0]                  dfv_bank_throttle_threshold
+    output wire [15:0]                  dfv_bank_throttle_threshold,
+    input dfv_collision_t dfv_collision,
+    input wire write_ready
 );
 
     `UNUSED_VAR (reset)
@@ -293,6 +295,38 @@ import VX_fpu_pkg::*;
         end
     end
 
+    // Per-core snapshot of a shared local-socket monitor. Software chooses
+    // one reporting core/warp/thread. Counts and time are sampled together;
+    // later CSR reads and reporting stores cannot change the held values.
+    dfv_collision_t collision_snapshot;
+    reg [PERF_CTR_BITS-1:0] collision_cycles;
+    reg collision_valid;
+    wire [31:0] collision_status = {28'b0, collision_snapshot.available,
+        (&collision_snapshot.dfv_count), (&collision_snapshot.natural_count),
+        collision_valid};
+
+    always @(posedge clk) begin
+        if (reset) begin
+            collision_snapshot <= '0;
+            collision_cycles <= '0;
+            collision_valid <= 1'b0;
+        end else if (write_enable && write_ready && write_addr == `VX_CSR_DFV_COLL_CTRL) begin
+            case (write_data)
+                `XLEN'(1): begin
+                    collision_snapshot <= dfv_collision;
+                    collision_cycles <= cycles;
+                    collision_valid <= 1'b1;
+                end
+                `XLEN'(0): begin
+                    collision_snapshot <= '0;
+                    collision_cycles <= '0;
+                    collision_valid <= 1'b0;
+                end
+                default:; // reserved commands have no effect
+            endcase
+        end
+    end
+
     // CSRs read //////////////////////////////////////////////////////////////
 
     reg [`XLEN-1:0] read_data_ro_w;
@@ -314,6 +348,15 @@ import VX_fpu_pkg::*;
             `VX_CSR_FCSR       : read_data_rw_w = `XLEN'(fcsr[read_wid]);
         `endif
             `VX_CSR_MSCRATCH   : read_data_rw_w = mscratch;
+
+            // Captured DFV observations are read-only. Reading CTRL is harmless.
+            `VX_CSR_DFV_COLL_CTRL    : read_data_ro_w = '0;
+            `VX_CSR_DFV_COLL_INFO    : read_data_ro_w = `XLEN'(`VX_DFV_COLLISION_ID);
+            `VX_CSR_DFV_COLL_NATURAL : read_data_ro_w = `XLEN'(collision_snapshot.natural_count);
+            `VX_CSR_DFV_COLL_DFV     : read_data_ro_w = `XLEN'(collision_snapshot.dfv_count);
+            `VX_CSR_DFV_COLL_STATUS  : read_data_ro_w = `XLEN'(collision_status);
+            `VX_CSR_DFV_COLL_CYCLE_LO: read_data_ro_w = `XLEN'(32'(collision_cycles));
+            `VX_CSR_DFV_COLL_CYCLE_HI: read_data_ro_w = `XLEN'(collision_cycles >> 32);
 
             // DFV CSRs
             12'h7C0            : read_data_rw_w = `XLEN'(dfv_ctrl_enable);       // VX_CSR_DFV_CTRL

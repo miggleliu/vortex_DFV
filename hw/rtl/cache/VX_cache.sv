@@ -84,7 +84,8 @@ module VX_cache import VX_gpu_pkg::*; #(
     input wire [15:0]        dfv_fill_bank_mask,
     input wire              dfv_stall_dcache_core_req,
     input wire [15:0]       dfv_throttle_threshold,
-    input wire [15:0]       dfv_bank_throttle_threshold
+    input wire [15:0]       dfv_bank_throttle_threshold,
+    output dfv_collision_t dfv_collision
 );
 
     `STATIC_ASSERT(NUM_BANKS == (1 << `CLOG2(NUM_BANKS)), ("invalid parameter: number of banks must be power of 2"))
@@ -462,6 +463,12 @@ module VX_cache import VX_gpu_pkg::*; #(
             .natural_edge_count (dfv_bank_natural_edge_count),
             .dfv_edge_count     (dfv_bank_dfv_edge_count)
         );
+
+        if (bank_id == 0) begin : g_dfv_collision_observation
+            assign dfv_collision.available = 1'b1;
+            assign dfv_collision.natural_count = dfv_bank_natural_edge_count;
+            assign dfv_collision.dfv_count = dfv_bank_dfv_edge_count;
+        end
 
         VX_cache_bank #(
             .BANK_ID      (bank_id),

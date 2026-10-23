@@ -202,6 +202,18 @@
 `define VX_CSR_VTYPE                    12'hC21
 `define VX_CSR_VLENB                    12'hC22
 
+// DFV collision observation: custom GPU CSRs, shared by RTL and software.
+// Counts refer to cache unit 0 / bank 0 of the reading core's local socket.
+`define VX_CSR_DFV_COLL_CTRL             12'h7CF // write 1: capture; write 0: invalidate
+`define VX_CSR_DFV_COLL_INFO             12'hCC8 // COL2 ABI identifier
+`define VX_CSR_DFV_COLL_NATURAL          12'hCC9 // captured natural edge count
+`define VX_CSR_DFV_COLL_DFV              12'hCCA // captured DFV edge count
+`define VX_CSR_DFV_COLL_STATUS           12'hCCB // valid, at-limit flags, available
+`define VX_CSR_DFV_COLL_CYCLE_LO         12'hCCC // captured core-cycle counter [31:0]
+`define VX_CSR_DFV_COLL_CYCLE_HI         12'hCCD // captured core-cycle counter [43:32]
+`define VX_DFV_COLLISION_ID              32'h434F4C32
+`define VX_DFV_COLLISION_WIDTH           12
+
 // GPGU CSRs
 
 `define VX_CSR_THREAD_ID                12'hCC0

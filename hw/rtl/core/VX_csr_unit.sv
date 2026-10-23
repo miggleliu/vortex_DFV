@@ -48,7 +48,8 @@ module VX_csr_unit import VX_gpu_pkg::*; #(
     output wire                 dfv_stall_dcache_fill_rsp,
     output wire [15:0]           dfv_fill_bank_mask,
     output wire [15:0]          dfv_throttle_threshold,
-    output wire [15:0]          dfv_bank_throttle_threshold
+    output wire [15:0]          dfv_bank_throttle_threshold,
+    input dfv_collision_t dfv_collision
 );
     `UNUSED_SPARAM (INSTANCE_ID)
     localparam PID_BITS   = `CLOG2(`NUM_THREADS / NUM_LANES);
@@ -129,7 +130,9 @@ module VX_csr_unit import VX_gpu_pkg::*; #(
         .dfv_stall_dcache_fill_rsp (dfv_stall_dcache_fill_rsp),
         .dfv_fill_bank_mask (dfv_fill_bank_mask),
         .dfv_throttle_threshold (dfv_throttle_threshold),
-        .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold)
+        .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold),
+        .dfv_collision (dfv_collision),
+        .write_ready (csr_req_ready)
     );
 
     // CSR read

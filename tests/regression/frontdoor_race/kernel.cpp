@@ -1,10 +1,12 @@
+#include <vx_dfv_collision_report.h>
 #include <vx_spawn.h>
 #include "common.h"
 
 // Frontdoor counterpart to tests/regression/dfv_stress phase1
-// (dcache_fill_rsp x dcache_core_req bank collision) -- NO DFV CSRs are
-// touched anywhere in this file. The only knob available to a pure software
-// test is this delay loop; see memory/frontdoor_vs_dfv.md for why that makes
+// (dcache_fill_rsp x dcache_core_req bank collision). No DFV stall/control
+// CSRs are written; observation-only snapshot commands do not enable DFV.
+// The only knob available to a pure software test is this delay loop; see
+// memory/frontdoor_vs_dfv.md for why that makes
 // hitting the exact same-cycle target a wide, state-dependent search rather
 // than a precise dial like DFV's shared-LFSR2 release.
 static inline void spin_delay(uint32_t iters) {
@@ -55,6 +57,11 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
 
 int main() {
   kernel_arg_t* arg = (kernel_arg_t*)csr_read(VX_CSR_MSCRATCH);
-  // Intentionally NO DFV CSR writes anywhere in this test.
-  return vx_spawn_threads(1, &arg->num_threads, nullptr, (vx_kernel_func_cb)kernel_body, arg);
+  // Observation-only CSR writes; no DFV stall/control state is changed.
+  vx_dfv_collision_snapshot_t dfv_begin, dfv_end;
+  vx_dfv_collision_capture(&dfv_begin);
+  int result = vx_spawn_threads(1, &arg->num_threads, nullptr, (vx_kernel_func_cb)kernel_body, arg);
+  vx_dfv_collision_capture(&dfv_end);
+  (void)vx_dfv_collision_report(&dfv_begin, &dfv_end);
+  return result;
 }

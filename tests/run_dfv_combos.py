@@ -2,15 +2,21 @@
 """Run DFV stall injection tests across all regression apps.
 
 For each app, patches kernel.cpp to enable/disable stall types,
-runs the RTL simulation, trims run.log to the last 15 lines,
+runs the RTL simulation, preserves GPU CSR reports while trimming run.log,
 extracts PERF and type-specific metrics, and saves logs + CSV.
 """
 
+import argparse
+from contextlib import contextmanager
 import csv
+import json
 import os
 import re
 import shutil
 import subprocess
+
+from dfv_csr import (CollisionReportError, MARKER, parse_collision_windows,
+                     collision_counts, collision_cycles)
 
 VORTEX_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 REG_DIR = os.path.join(VORTEX_ROOT, "tests", "regression")
@@ -21,8 +27,8 @@ LOG_BASE = os.path.join(VORTEX_ROOT, "logs")
 # =============================================================================
 # DFV TEST TYPE
 #   1 = Arbitration race condition
-#         Reports L1 arbiter and per-bank collision counts.
-#         Use icache/dcache stall combos; collision $display lines are the signal.
+#         Reports GPU-CSR snapshots of local D-cache unit 0 / bank 0.
+#         Rates use the captured core-cycle interval, not whole-run PERF cycles.
 #   2 = Downstream backpressure / upstream throttle
 #         Reports whether the throttle counter ever reached its threshold.
 #         Use fill stall (all banks); DFV_THROTTLE_REACHED $display lines are the signal.
@@ -34,7 +40,7 @@ LOG_BASE = os.path.join(VORTEX_ROOT, "logs")
 #         lines from the g_dfv_bank_throttle[N] instances are the signal.
 #         release_forever disabled so stall cycles on/off via LFSR2.
 # =============================================================================
-DFV_TEST_TYPE = 3
+DFV_TEST_TYPE = 1
 
 STALL_TYPES = [
     ("icache",       "VX_CSR_DFV_ICACHE_FILL_REQ_STALL"),
@@ -66,7 +72,8 @@ DEFAULT_BANK_THROTTLE_THRESHOLD = 0x1800 #0x0100
 #   "throttle_threshold"    – VX_CSR_DFV_THROTTLE_THRESHOLD         (default 0x1800, Type 2 global full-freeze)
 #   "bank_throttle_threshold" – VX_CSR_DFV_BANK_THROTTLE_THRESHOLD  (default 0x0032, Type 3 per-bank, uncalibrated)
 
-# Type 1: watch L1 arbiter/bank collision counters
+# Type 1: observe the local D-cache unit-0/bank-0 collision CSR interface.
+# L1 arbiter and other-bank counts are unavailable through the COL2 CSR ABI.
 # Use faster release (threshold=240) so stalls cycle and produce many collision events
 COMBOS_TYPE1 = [
     {"stalls": (False, False, False, False), "label": "none",
@@ -162,6 +169,13 @@ def patch_kernel(app, combo_dict):
         pattern = rf"(csr_write\({csr_macro},\s*)\d(\))"
         src = re.sub(pattern, rf"\g<1>{int(enabled)}\2", src)
 
+    # A genuine OFF baseline must also clear the global enable; otherwise the
+    # unchanged RTL counter classifies natural alignments as DFV events.
+    src, count = re.subn(r"(csr_write\(VX_CSR_DFV_CTRL,\s*)[01](\))",
+                         rf"\g<1>{int(any(stalls))}\2", src, count=1)
+    if count != 1:
+        raise ValueError(f"Expected one DFV setup control in {path}")
+
     for csr_name, value in [
         ("VX_CSR_DFV_SET_THRESHOLD",      set_thr),
         ("VX_CSR_DFV_RELEASE_THRESHOLD",  rel_thr),
@@ -179,65 +193,30 @@ def patch_kernel(app, combo_dict):
         f.write(src)
 
 
+@contextmanager
+def preserve_kernel(app):
+    """Restore the user's exact original source, including on failed runs/Ctrl+C."""
+    path = kernel_path(app)
+    with open(path, "rb") as stream:
+        original = stream.read()
+    try:
+        yield
+    finally:
+        with open(path, "wb") as stream:
+            stream.write(original)
+
+
 # =============================================================================
 # Log parsing
 # =============================================================================
 
-def _scan_collision_line(line, out):
-    """Match one log line against the collision-counter $display formats,
-    updating out[key] with the reported (cumulative) edge_count."""
-    m = re.search(r"DFV_COLLISION_NATURAL:.*dfv_l1_arb_ctr\s+edge_count=(\d+)", line)
-    if m:
-        out["natural_l1_arb"] = int(m.group(1))
-    m = re.search(r"DFV_COLLISION_DFV:.*dfv_l1_arb_ctr\s+edge_count=(\d+)", line)
-    if m:
-        out["dfv_l1_arb"] = int(m.group(1))
-    m = re.search(
-        r"DFV_COLLISION_NATURAL:.*dcache.*g_banks\[(\d+)\]\.dfv_bank_ctr\s+edge_count=(\d+)", line
-    )
-    if m:
-        out[f"natural_bank{m.group(1)}"] = int(m.group(2))
-    m = re.search(
-        r"DFV_COLLISION_DFV:.*dcache.*g_banks\[(\d+)\]\.dfv_bank_ctr\s+edge_count=(\d+)", line
-    )
-    if m:
-        out[f"dfv_bank{m.group(1)}"] = int(m.group(2))
-
-
 def extract_collisions(lines, start_line=None):
-    """Extract collision counts for each counter (type 1), counting only
-    collisions accumulated after the kernel's DFV_TEST_START print.
+    """Read only GPU CSR snapshots. Log-position markers do not define this ROI.
 
-    natural_edge_count/dfv_edge_count (VX_dfv_collision_ctr) are cumulative,
-    saturating counters -- they do NOT reset at DFV_TEST_START, they just
-    keep incrementing. So "only count events after the marker" means
-    (value at end of run) - (value already accumulated at/before the
-    marker), not simply ignoring log lines before the marker (which
-    wouldn't remove their contribution to the running total). Note: if a
-    counter saturates (12-bit, caps at 4095) before the marker and stays
-    saturated after, this delta will under-report -- a pre-existing
-    limitation of the RTL counter's saturation, not something this
-    filtering introduces or can fix.
+    start_line is retained for callers of the old function; capture boundaries
+    now come from the CSR values themselves. Missing snapshots raise an error.
     """
-    baseline = {}  # value of each counter at/before start_line (setup-stage total)
-    final = {}     # value of each counter across the whole log (final total)
-    for i, line in enumerate(lines):
-        _scan_collision_line(line, final)
-        if start_line is not None and i <= start_line:
-            _scan_collision_line(line, baseline)
-
-    if start_line is not None:
-        results = {k: v - baseline.get(k, 0) for k, v in final.items()}
-    else:
-        results = dict(final)
-
-    # Appended summary lines from a previous trim -- already the final
-    # answer from an earlier run of this script, use as-is
-    for line in lines:
-        m = re.search(r"COLLISION:\s+(\w+)=(\d+)", line)
-        if m:
-            results[m.group(1)] = int(m.group(2))
-    return results
+    return collision_counts(parse_collision_windows(lines))
 
 
 def find_test_start_line(lines):
@@ -353,8 +332,15 @@ def trim_log(path, keep=200):
     # boundary across all combos, not just the ones that enable a stall.
     start_line = find_test_start_line(all_lines)
 
+    window_cycles, metric_error = {}, ""
     if DFV_TEST_TYPE == 1:
-        collisions       = extract_collisions(all_lines, start_line)
+        try:
+            windows = parse_collision_windows(all_lines)
+            collisions = collision_counts(windows)
+            window_cycles = collision_cycles(windows)
+        except CollisionReportError as exc:
+            collisions = {}
+            metric_error = str(exc)
         throttle_reached = 0
     elif DFV_TEST_TYPE == 2:
         collisions       = {}
@@ -364,11 +350,20 @@ def trim_log(path, keep=200):
         collisions       = extract_bank_throttle(all_lines, start_line)
         throttle_reached = 0
 
-    tail = all_lines[-keep:]
+    # Preserve the complete raw CSR records, even if later output pushes them
+    # beyond the tail. Re-parsing a trimmed log must not trust summary footers.
+    def csr_line(line):
+        return MARKER in line or "DFV_CSR_ERROR" in line
+    tail = [line for line in all_lines[-keep:] if not csr_line(line)]
+    tail += [line for line in all_lines if csr_line(line)]
     tail.append("\n")
     if DFV_TEST_TYPE == 1:
         for key, val in sorted(collisions.items()):
             tail.append(f"COLLISION: {key}={val}\n")
+        for key, val in sorted(window_cycles.items()):
+            tail.append(f"CSR_WINDOW: {key}_cycles={val}\n")
+        if metric_error:
+            tail.append(f"CSR_MEASUREMENT_ERROR: {metric_error}\n")
     elif DFV_TEST_TYPE == 2:
         tail.append(f"THROTTLE_REACHED: {throttle_reached}\n")
     elif DFV_TEST_TYPE == 3:
@@ -379,7 +374,7 @@ def trim_log(path, keep=200):
 
     with open(path, "w") as f:
         f.writelines(tail)
-    return tail, collisions, throttle_reached, sig_mismatch
+    return tail, collisions, throttle_reached, sig_mismatch, window_cycles, metric_error
 
 
 # =============================================================================
@@ -428,24 +423,28 @@ def get_collision_columns(perf_rows):
     cols = set()
     for row in perf_rows:
         cols.update(row[6].keys())  # collisions dict at index 6
-    arb_cols = sorted(c for c in cols if "l1_arb" in c)
-    def bank_key(x):
-        m = re.search(r"\d+", x.split("bank")[1])
-        return (x.split("bank")[0], int(m.group()) if m else 0)
-    bank_cols = sorted((c for c in cols if "bank" in c), key=bank_key)
-    return arb_cols + bank_cols
+    def counter_key(name):
+        m = re.fullmatch(r"core(\d+)_cache0_bank0_(natural|dfv|total)", name)
+        if not m:
+            raise ValueError(f"Unknown CSR counter column: {name}")
+        return int(m[1]), ("natural", "dfv", "total").index(m[2])
+    return sorted(cols, key=counter_key)
 
 
-def compute_collision_rates(perf_rows, coll_cols):
-    """Return per-row dict of collision rates (count/cycle) for each counter.
+def compute_collision_rates(perf_rows, coll_cols, cycle_rows):
+    """Return count/captured-window-cycle for each core's reported counter.
 
     Rate is -1.0 when count or cycles are unavailable.
     """
+    if len(perf_rows) != len(cycle_rows):
+        raise ValueError("CSR cycle intervals must match the performance rows")
     rates = []
-    for _, _, _, cycles, _, _, coll, _ in perf_rows:
+    for row, intervals in zip(perf_rows, cycle_rows):
+        coll = row[6]
         row_rates = {}
         for c in coll_cols:
             count = coll.get(c, -1)
+            cycles = intervals.get(c.rsplit("_", 1)[0], -1)
             row_rates[c] = count / cycles if (count >= 0 and cycles > 0) else -1.0
         rates.append(row_rates)
     return rates
@@ -484,65 +483,95 @@ def compute_ipc_drops(perf_rows):
 # =============================================================================
 
 def main():
-    apps = list(TEST_APPS.keys())
+    global DFV_TEST_TYPE, COMBOS
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--type", type=int, choices=(1, 2, 3), default=DFV_TEST_TYPE,
+                        help="1: collision CSRs (default); 2/3: legacy RTL throttle logs")
+    parser.add_argument("--apps", nargs="+", choices=sorted(TEST_APPS), default=list(TEST_APPS))
+    parser.add_argument("--parse-log", help="Decode a Type-1 CSR log without building or running an app")
+    args = parser.parse_args()
+    DFV_TEST_TYPE = args.type
+    COMBOS = {1: COMBOS_TYPE1, 2: COMBOS_TYPE2, 3: COMBOS_TYPE3}[DFV_TEST_TYPE]
+    if args.parse_log:
+        if DFV_TEST_TYPE != 1:
+            parser.error("--parse-log supports the Type-1 collision CSR interface")
+        try:
+            with open(args.parse_log, errors="replace") as stream:
+                windows = parse_collision_windows(stream)
+            print(json.dumps([window.as_dict() for window in windows], indent=2))
+        except (OSError, CollisionReportError) as exc:
+            parser.exit(1, f"CSR_ERROR: {exc}\n")
+        return 0
+    if not os.path.isdir(BUILD_DIR):
+        parser.error(f"Configured Vortex build directory is missing: {BUILD_DIR}")
+    apps = args.apps
     total = len(apps) * len(COMBOS)
     type_label = {1: "arbitration_race", 2: "fill_throttle", 3: "asymmetric_slowdown"}[DFV_TEST_TYPE]
     print(f"DFV_TEST_TYPE={DFV_TEST_TYPE} ({type_label}), {len(apps)} apps x {len(COMBOS)} combos = {total} runs")
 
     perf_rows = []  # (app, tag, instrs, cycles, ipc, status, collisions, throttle_reached)
+    cycle_rows = []  # per-core CSR window lengths, separate from whole-run PERF
+    metric_errors = []
     idx = 0
 
     for app in apps:
         log_dir = os.path.join(LOG_BASE, app)
         os.makedirs(log_dir, exist_ok=True)
 
-        for combo_dict in COMBOS:
-            idx += 1
-            tag  = combo_tag(combo_dict)
-            name = combo_name(combo_dict)
-            desc = combo_desc(combo_dict)
-            print(f"\n[{idx}/{total}] {app}/{name}  ({desc})")
+        with preserve_kernel(app):
+            for combo_dict in COMBOS:
+                idx += 1
+                tag  = combo_tag(combo_dict)
+                name = combo_name(combo_dict)
+                desc = combo_desc(combo_dict)
+                print(f"\n[{idx}/{total}] {app}/{name}  ({desc})")
 
-            patch_kernel(app, combo_dict)
-            args = TEST_APPS[app] + " -d"
-            cmd = f"./ci/blackbox.sh --driver=rtlsim --app={app} --args='{args}' >run.log 2>&1"
-            print(f"  CMD: {cmd}")
-            rc = subprocess.run(cmd, shell=True, cwd=BUILD_DIR).returncode
+                patch_kernel(app, combo_dict)
+                run_args = TEST_APPS[app] + " -d"
+                cmd = ["./ci/blackbox.sh", "--driver=rtlsim", f"--app={app}", f"--args={run_args}"]
+                print(f"  CMD: {cmd}")
+                with open(RUN_LOG, "w") as stream:
+                    rc = subprocess.run(cmd, cwd=BUILD_DIR, stdout=stream,
+                                        stderr=subprocess.STDOUT).returncode
 
-            if not os.path.isfile(RUN_LOG):
-                print(f"  WARNING: {RUN_LOG} not found")
-                perf_rows.append((app, tag, -1, -1, -1.0, "NO_LOG", {}, 0))
-                continue
+                if not os.path.isfile(RUN_LOG):
+                    print(f"  WARNING: {RUN_LOG} not found")
+                    perf_rows.append((app, tag, -1, -1, -1.0, "NO_LOG", {}, 0))
+                    cycle_rows.append({})
+                    metric_errors.append("Run log was not created")
+                    continue
 
-            tail, collisions, throttle_reached, sig_mismatch = trim_log(RUN_LOG)
-            instrs, cycles, ipc = extract_perf(tail)
-            dest = os.path.join(log_dir, name)
-            shutil.move(RUN_LOG, dest)
+                tail, collisions, throttle_reached, sig_mismatch, intervals, metric_error = trim_log(RUN_LOG)
+                instrs, cycles, ipc = extract_perf(tail)
+                dest = os.path.join(log_dir, name)
+                shutil.move(RUN_LOG, dest)
 
-            if sig_mismatch:
-                status = "SIGMISMATCH"
-            elif rc == 0:
-                status = "PASS"
-            else:
-                status = f"FAIL(rc={rc})"
+                if sig_mismatch:
+                    status = "SIGMISMATCH"
+                elif rc != 0:
+                    status = f"FAIL(rc={rc})"
+                elif metric_error:
+                    status = "CSR_ERROR"
+                else:
+                    status = "PASS"
 
-            perf_rows.append((app, tag, instrs, cycles, ipc, status, collisions, throttle_reached))
+                perf_rows.append((app, tag, instrs, cycles, ipc, status, collisions, throttle_reached))
+                cycle_rows.append(intervals)
+                metric_errors.append(metric_error)
 
-            if DFV_TEST_TYPE == 1:
-                coll_str = " ".join(f"{k}={v}" for k, v in sorted(collisions.items()))
-                extra = f"[{coll_str}]" if coll_str else "[]"
-            elif DFV_TEST_TYPE == 3:
-                bt_str = " ".join(f"bank{k}={v}" for k, v in sorted(collisions.items()))
-                extra = f"[throttle_reached: {bt_str}; ipc_drop computed post-run]" if bt_str \
-                        else "[throttle_reached: none; ipc_drop computed post-run]"
-            else:
-                extra = f"[throttle_reached={throttle_reached}]"
+                if DFV_TEST_TYPE == 1:
+                    coll_str = " ".join(f"{k}={v}" for k, v in sorted(collisions.items()))
+                    extra = f"[{coll_str}]" if coll_str else "[]"
+                elif DFV_TEST_TYPE == 3:
+                    bt_str = " ".join(f"bank{k}={v}" for k, v in sorted(collisions.items()))
+                    extra = f"[throttle_reached: {bt_str}; ipc_drop computed post-run]" if bt_str \
+                            else "[throttle_reached: none; ipc_drop computed post-run]"
+                else:
+                    extra = f"[throttle_reached={throttle_reached}]"
 
-            perf_str = f"instrs={instrs} cycles={cycles} IPC={ipc:.4f}" if instrs != -1 else "no PERF line"
-            print(f"  {status}  {perf_str} {extra} -> {dest}")
+                perf_str = f"instrs={instrs} cycles={cycles} IPC={ipc:.4f}" if instrs != -1 else "no PERF line"
+                print(f"  {status}  {perf_str} {extra} -> {dest}")
 
-        # Restore kernel to normalized baseline after each app
-        patch_kernel(app, {"stalls": (False, False, True, False)})
 
     # ------------------------------------------------------------------
     # Post-processing: derived metrics
@@ -552,7 +581,8 @@ def main():
 
     if DFV_TEST_TYPE == 1:
         coll_cols  = get_collision_columns(perf_rows)
-        coll_rates = compute_collision_rates(perf_rows, coll_cols)
+        coll_rates = compute_collision_rates(perf_rows, coll_cols, cycle_rows)
+        window_cols = sorted({key for row in cycle_rows for key in row})
         rate_cols  = [f"{c}_rate" for c in coll_cols]
     elif DFV_TEST_TYPE == 3:
         ipc_drops = compute_ipc_drops(perf_rows)
@@ -564,12 +594,13 @@ def main():
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
         if DFV_TEST_TYPE == 1:
-            w.writerow(["app", "stall_combo", "instrs", "cycles", "IPC", "status"]
-                       + coll_cols + rate_cols)
+            w.writerow(["app", "stall_combo", "instrs", "cycles", "IPC", "status", "csr_error"]
+                       + [f"{key}_window_cycles" for key in window_cols] + coll_cols + rate_cols)
             for i, (app, tag, instrs, cycles, ipc, status, coll, _) in enumerate(perf_rows):
-                row = [app, tag, instrs, cycles, ipc, status]
+                row = [app, tag, instrs, cycles, ipc, status, metric_errors[i]]
+                row += [cycle_rows[i].get(key, -1) for key in window_cols]
                 row += [coll.get(c, -1) for c in coll_cols]
-                row += [f"{coll_rates[i][c]:.6f}" if coll_rates[i][c] >= 0 else -1
+                row += [f"{coll_rates[i][c]:.12g}" if coll_rates[i][c] >= 0 else -1
                         for c in coll_cols]
                 w.writerow(row)
         elif DFV_TEST_TYPE == 3:
@@ -613,7 +644,7 @@ def main():
         print(f"{'=' * width}")
 
     if DFV_TEST_TYPE == 1:
-        coll_hdrs = [c[:10] for c in coll_cols]
+        coll_hdrs = [re.sub(r"core(\d+)_cache0_bank0_", r"c\1_", c) for c in coll_cols]
         hdr = f"{'APP':<{app_w}} {'COMBO':<{tag_w}} {'INSTRS':>8} {'CYCLES':>8} {'IPC':>7}"
         for h in coll_hdrs:
             hdr += f" {h:>16}"
@@ -631,7 +662,8 @@ def main():
             print(line + f" {status}")
 
         _print_table(hdr, _type1_row)
-        print("  Column format: count(rate/cycle)")
+        print("  Column format: count(rate/captured GPU window cycle); PERF cycles cover the whole run.")
+        print("  cN identifies the reporting core; target is its shared socket's cache unit 0 / bank 0.")
 
     elif DFV_TEST_TYPE == 3:
         baseline_ipc = {}
@@ -676,7 +708,8 @@ def main():
         print(f"{'=' * width}")
 
     print(f"Logs saved under {LOG_BASE}/")
+    return int(any(row[5] != "PASS" for row in perf_rows))
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

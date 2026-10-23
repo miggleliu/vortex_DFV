@@ -173,7 +173,8 @@ module VX_core_top import VX_gpu_pkg::*; #(
         .dfv_enable_out             (),
         .dfv_fill_bank_mask_out     (),
         .dfv_throttle_threshold_out (),
-        .dfv_bank_throttle_threshold_out ()
+        .dfv_bank_throttle_threshold_out (),
+        .dfv_collision ('0)
     );
 
 endmodule

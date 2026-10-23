@@ -90,7 +90,8 @@ module VX_cache_cluster import VX_gpu_pkg::*; #(
     input wire [15:0]        dfv_fill_bank_mask,
     input wire              dfv_stall_dcache_core_req,
     input wire [15:0]       dfv_throttle_threshold,
-    input wire [15:0]       dfv_bank_throttle_threshold
+    input wire [15:0]       dfv_bank_throttle_threshold,
+    output dfv_collision_t dfv_collision
 );
     localparam NUM_CACHES = `UP(NUM_UNITS);
     localparam PASSTHRU   = (NUM_UNITS == 0);
@@ -154,6 +155,9 @@ module VX_cache_cluster import VX_gpu_pkg::*; #(
         end
     end
 
+    dfv_collision_t per_unit_dfv_collision [NUM_CACHES];
+    assign dfv_collision = per_unit_dfv_collision[0];
+
      for (genvar i = 0; i < NUM_CACHES; ++i) begin : g_cache_wrap
         VX_cache_wrap #(
             .INSTANCE_ID  (`SFORMATF(("%s%0d", INSTANCE_ID, i))),
@@ -192,7 +196,8 @@ module VX_cache_cluster import VX_gpu_pkg::*; #(
             .dfv_fill_bank_mask (dfv_fill_bank_mask),
             .dfv_stall_dcache_core_req (dfv_stall_dcache_core_req),
             .dfv_throttle_threshold (dfv_throttle_threshold),
-            .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold)
+            .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold),
+        .dfv_collision (per_unit_dfv_collision[i])
         );
     end
 

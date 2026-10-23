@@ -1,3 +1,4 @@
+#include <vx_dfv_collision_report.h>
 #include <vx_spawn.h>
 #include <vx_print.h>
 #include <vx_intrinsics.h>
@@ -36,6 +37,7 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
 }
 
 int main() {
+    vx_dfv_collision_snapshot_t dfv_begin = {};
     kernel_arg_t* arg = (kernel_arg_t*)csr_read(VX_CSR_MSCRATCH);
     if (arg->enable_dfv_test) {
         csr_write(VX_CSR_DFV_CTRL, 1);
@@ -53,6 +55,7 @@ int main() {
         csr_write(VX_CSR_DFV_WRITEBACK_STALL, 0);
         csr_write(VX_CSR_DFV_DCACHE_FILL_RSP_STALL, 1);
         vx_printf("DFV_TEST_START\n");
+        vx_dfv_collision_capture(&dfv_begin);
     }
     if (arg->use_lmem) {
         // populate local memory
@@ -64,7 +67,11 @@ int main() {
     }
     int __ret = vx_spawn_threads(2, arg->grid_dim, nullptr, (vx_kernel_func_cb)kernel_body, arg);
     if (arg->enable_dfv_test) {
+        vx_dfv_collision_snapshot_t dfv_end;
+        vx_dfv_collision_capture(&dfv_end);
         csr_write(VX_CSR_DFV_CTRL, 0);
+        // Functional status is separate; the runner rejects invalid CSR metrics.
+        (void)vx_dfv_collision_report(&dfv_begin, &dfv_end);
     }
     return __ret;
 }

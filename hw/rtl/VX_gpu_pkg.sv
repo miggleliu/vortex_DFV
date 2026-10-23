@@ -20,6 +20,14 @@
 
 package VX_gpu_pkg;
 
+    // Local-socket data-cache unit 0, bank 0. This is an observation path;
+    // it does not feed ready/valid or change the existing DFV counter logic.
+    typedef struct packed {
+        logic available;
+        logic [11:0] natural_count;
+        logic [11:0] dfv_count;
+    } dfv_collision_t;
+
 	localparam NC_BITS = `CLOG2(`NUM_CORES);
 	localparam NW_BITS = `CLOG2(`NUM_WARPS);
 	localparam NT_BITS = `CLOG2(`NUM_THREADS);
