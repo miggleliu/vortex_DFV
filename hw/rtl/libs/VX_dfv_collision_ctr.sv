@@ -3,7 +3,7 @@
 //==============================================================================
 // VX_dfv_collision_ctr - DFV Collision Counter
 //==============================================================================
-// Two 12-bit saturating edge-collision counters:
+// Two 32-bit saturating edge-collision counters:
 //
 //   natural_edge_count: simultaneous 0→1 when DFV is OFF (enable=0)
 //   dfv_edge_count:     simultaneous 0→1 when DFV is ON  (enable=1)
@@ -17,8 +17,8 @@ module VX_dfv_collision_ctr (
     input  logic        enable,
     input  logic        event_a,
     input  logic        event_b,
-    output logic [11:0] natural_edge_count,
-    output logic [11:0] dfv_edge_count
+    output logic [31:0] natural_edge_count,
+    output logic [31:0] dfv_edge_count
 );
     // Register all inputs
     reg enable_buf;
@@ -48,22 +48,22 @@ module VX_dfv_collision_ctr (
     wire natural_collision = edge_collision && !enable_buf;
     wire dfv_collision     = edge_collision && enable_buf;
 
-    reg [11:0] natural_ctr;
-    reg [11:0] dfv_ctr;
+    reg [31:0] natural_ctr;
+    reg [31:0] dfv_ctr;
 
     always @(posedge clk) begin
         if (reset) begin
             event_a_prev <= 1'b0;
             event_b_prev <= 1'b0;
-            natural_ctr  <= 12'd0;
-            dfv_ctr      <= 12'd0;
+            natural_ctr  <= 32'd0;
+            dfv_ctr      <= 32'd0;
         end else begin
             event_a_prev <= event_a_buf;
             event_b_prev <= event_b_buf;
-            if (natural_collision && natural_ctr < 12'hFFF)
-                natural_ctr <= natural_ctr + 12'd1;
-            if (dfv_collision && dfv_ctr < 12'hFFF)
-                dfv_ctr <= dfv_ctr + 12'd1;
+            if (natural_collision && natural_ctr < 32'hFFFFFFFF)
+                natural_ctr <= natural_ctr + 32'd1;
+            if (dfv_collision && dfv_ctr < 32'hFFFFFFFF)
+                dfv_ctr <= dfv_ctr + 32'd1;
         end
     end
 

@@ -2,7 +2,7 @@
 """Analyze GPU CSR collision snapshots from frontdoor or DFV regression logs.
 
 Uses captured BEGIN/END count and cycle differences. The scope is the reporting
-core's shared socket D-cache unit 0 / bank 0; different cores are not summed.
+monitor's reported cache/domain, unit, bank and owner; reader cores are not summed.
 Legacy DFV_COLLISION_* simulator prints do not supply measurements.
 """
 import argparse
@@ -34,7 +34,7 @@ def main():
     for window in windows:
         cycles = args.total_cycles if args.total_cycles is not None else window.cycles
         source = "external override" if args.total_cycles is not None else "captured GPU CSR interval"
-        print(f"core {window.core}, shared local D-cache unit 0 / bank 0")
+        print(f"{window.prefix} (monitor index {window.index})")
         print(f"  natural={window.natural}, DFV-classified={window.dfv}, total={window.total}")
         print(f"  cycles={cycles} ({source})")
         print(f"  edges/Mcycle={window.total * 1e6 / cycles:.6f}")

@@ -29,6 +29,7 @@ module VX_cluster import VX_gpu_pkg::*; #(
 
     // DCRs
     VX_dcr_bus_if.slave         dcr_bus_if,
+    input dfv_collision_t dfv_l3_collisions [`UP(DFV_L3_COLL_COUNT)],
 
     // Memory
     VX_mem_bus_if.master        mem_bus_if [`L2_MEM_PORTS],
@@ -82,6 +83,23 @@ module VX_cluster import VX_gpu_pkg::*; #(
     ) per_socket_mem_bus_if[NUM_SOCKETS * `L1_MEM_PORTS]();
 
     `RESET_RELAY (l2_reset, reset);
+    dfv_collision_t l2_collisions [`L2_NUM_BANKS];
+    dfv_collision_t shared_collisions [`UP(DFV_SHARED_COLL_COUNT)];
+    for (genvar j = 0; j < $size(l2_collisions); ++j) begin : g_unused_l2_collisions
+        `UNUSED_VAR (l2_collisions[j])
+    end
+    for (genvar j = 0; j < $size(dfv_l3_collisions); ++j) begin : g_unused_dfv_l3_collisions
+        `UNUSED_VAR (dfv_l3_collisions[j])
+    end
+    for (genvar i = 0; i < DFV_L2_COLL_COUNT; ++i) begin : g_obs_l2
+        assign shared_collisions[i] = l2_collisions[i];
+    end
+    for (genvar i = 0; i < DFV_L3_COLL_COUNT; ++i) begin : g_obs_l3
+        assign shared_collisions[DFV_L2_COLL_COUNT + i] = dfv_l3_collisions[i];
+    end
+    if (DFV_SHARED_COLL_COUNT == 0) begin : g_obs_none
+        assign shared_collisions[0] = '0;
+    end
 
     VX_cache_wrap #(
         .INSTANCE_ID    (`SFORMATF(("%s-l2cache", INSTANCE_ID))),
@@ -119,7 +137,8 @@ module VX_cluster import VX_gpu_pkg::*; #(
         .dfv_stall_dcache_core_req (1'b0),
         .dfv_throttle_threshold (16'd0),
         .dfv_bank_throttle_threshold (16'd0),
-        `UNUSED_PIN (dfv_collision)
+        .dfv_collision (l2_collisions),
+        `UNUSED_PIN (dfv_throttle)
     );
 
     ///////////////////////////////////////////////////////////////////////////
@@ -149,6 +168,7 @@ module VX_cluster import VX_gpu_pkg::*; #(
         `endif
 
             .dcr_bus_if     (socket_dcr_bus_if),
+            .dfv_shared_collisions (shared_collisions),
 
             .mem_bus_if     (per_socket_mem_bus_if[socket_id * `L1_MEM_PORTS +: `L1_MEM_PORTS]),
 

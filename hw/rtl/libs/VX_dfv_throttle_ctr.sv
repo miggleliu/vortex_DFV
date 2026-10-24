@@ -15,7 +15,9 @@ module VX_dfv_throttle_ctr (
     input  logic        reset,
     input  logic        signal_in,
     input  logic [15:0] threshold,
-    output logic        reached
+    output logic        reached,
+    output logic [31:0] event_count,
+    output logic [15:0] observed_threshold
 );
 
     // Register all inputs
@@ -46,17 +48,24 @@ module VX_dfv_throttle_ctr (
 
     assign reached = (ctr == threshold_buf);
 
-`ifdef SIMULATION
+    // Count the same rising reached events as the simulator log. Threshold
+    // zero is excluded, matching the old runner's reset/init-event filter.
     reg reached_prev;
+    assign observed_threshold = threshold_buf;
     always @(posedge clk) begin
-        if (reset)
+        if (reset) begin
             reached_prev <= 1'b0;
-        else begin
+            event_count <= '0;
+        end else begin
             reached_prev <= reached;
-            if (reached && !reached_prev) begin
-                $display("%t: DFV_THROTTLE_REACHED: %m  threshold=%0d", $time, threshold_buf);
-            end
+            if (reached && !reached_prev && threshold_buf != 0 && !(&event_count))
+                event_count <= event_count + 32'd1;
         end
+    end
+`ifdef SIMULATION
+    always @(posedge clk) begin
+        if (!reset && reached && !reached_prev)
+            $display("%t: DFV_THROTTLE_REACHED: %m  threshold=%0d", $time, threshold_buf);
     end
 `endif
 

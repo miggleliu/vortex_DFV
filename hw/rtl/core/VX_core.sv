@@ -53,7 +53,8 @@ module VX_core import VX_gpu_pkg::*; #(
     output wire [15:0]       dfv_fill_bank_mask_out,
     output wire [15:0]      dfv_throttle_threshold_out,
     output wire [15:0]      dfv_bank_throttle_threshold_out,
-    input dfv_collision_t dfv_collision
+    input dfv_throttle_t dfv_throttle [`UP(DFV_THROTTLE_COUNT)],
+    input dfv_collision_t dfv_collision [DFV_COLLISION_COUNT]
 );
     VX_schedule_if      schedule_if();
     VX_fetch_if         fetch_if();
@@ -230,6 +231,7 @@ module VX_core import VX_gpu_pkg::*; #(
         .dfv_fill_bank_mask (dfv_fill_bank_mask),
         .dfv_throttle_threshold (dfv_throttle_threshold),
         .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold),
+        .dfv_throttle (dfv_throttle),
         .dfv_collision (dfv_collision)
     );
 

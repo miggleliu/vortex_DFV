@@ -58,10 +58,12 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
 int main() {
   kernel_arg_t* arg = (kernel_arg_t*)csr_read(VX_CSR_MSCRATCH);
   // Observation-only CSR writes; no DFV stall/control state is changed.
-  vx_dfv_collision_snapshot_t dfv_begin, dfv_end;
-  vx_dfv_collision_capture(&dfv_begin);
+  vx_dfv_snapshot_t dfv_begin = {}, dfv_end = {};
+  VX_DFV_ALLOC(&dfv_begin);
+  VX_DFV_ALLOC(&dfv_end);
+  vx_dfv_capture(&dfv_begin);
   int result = vx_spawn_threads(1, &arg->num_threads, nullptr, (vx_kernel_func_cb)kernel_body, arg);
-  vx_dfv_collision_capture(&dfv_end);
-  (void)vx_dfv_collision_report(&dfv_begin, &dfv_end);
+  vx_dfv_capture(&dfv_end);
+  (void)vx_dfv_report(&dfv_begin, &dfv_end);
   return result;
 }

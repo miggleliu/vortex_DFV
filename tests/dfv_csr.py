@@ -1,153 +1,201 @@
 #!/usr/bin/env python3
-"""Decode GPU-printed COL2 snapshots; RTL $display messages are not measurements.
+"""Decode separate indexed collision (COL3) and throttle (THR1) CSR families.
 
-The fixed target is local-socket D-cache unit 0 / bank 0. A core ID identifies
-the reporting core, not ownership of the shared cache events. No cross-core
-aggregation is performed. BEGIN/END values are printed after END is captured.
+Only GPU-printed raw frames/samples supply data. RTL displays are never parsed.
+Each core captures all slots of a family simultaneously. Shared observations
+are kept separate by reader core; no cross-core totals are formed.
 """
 from dataclasses import dataclass
 import re
 
-COL2_ID = 0x434F4C32
-COUNTER_LIMIT = 4095
-MARKER = "DFV_CSR_SNAPSHOT"
-FIELDS = frozenset(("v", "core", "cores", "cache", "bank", "phase", "info",
-                    "flags", "natural", "dfv", "cycle_lo", "cycle_hi"))
+FRAME_MARKER = 'DFV_CSR_FRAME'
+SAMPLE_MARKER = 'DFV_CSR_SAMPLE'
+MARKER = FRAME_MARKER
+IDS = {'collision': 0x434F4C33, 'throttle': 0x54485231}
+LIMIT = 0xFFFFFFFF
+FRAME_FIELDS = set('v core cores family phase info count valid cycle_lo cycle_hi'.split())
+SAMPLE_FIELDS = set('v core family phase index desc owner flags count0 count1 threshold'.split())
+DOMAINS = {0: 'dcache', 1: 'icache', 2: 'l1arb', 3: 'l2', 4: 'l3'}
 
 
 class CollisionReportError(ValueError):
-    """A missing or invalid GPU CSR report, never an implicit zero count."""
+    """Invalid/missing observation data, never an implicit zero."""
 
 
 @dataclass(frozen=True)
-class Snapshot:
+class ObservationWindow:
     core: int
     cores: int
-    phase: str
-    natural: int
-    dfv: int
+    family: str
+    index: int
+    descriptor: int
+    owner: int
+    count0: int
+    count1: int
     cycles: int
+    threshold: int
 
+    @property
+    def domain(self):
+        return DOMAINS[self.descriptor >> 24] if self.family == 'collision' else (
+            'global' if self.descriptor >> 24 == 0 else 'bank')
 
-@dataclass(frozen=True)
-class CollisionWindow:
-    core: int
-    cores: int
-    begin: Snapshot
-    end: Snapshot
+    @property
+    def unit(self):
+        return (self.descriptor >> 16) & 255
+
+    @property
+    def bank(self):
+        return self.descriptor & 65535
 
     @property
     def prefix(self):
-        return f"core{self.core}_cache0_bank0"
+        base = f'core{self.core}_{self.family}_{self.domain}_owner{self.owner}_unit{self.unit}'
+        return base if self.domain == 'global' else base + f'_bank{self.bank}'
 
     @property
     def natural(self):
-        return self.end.natural - self.begin.natural
+        return self.count0
 
     @property
     def dfv(self):
-        return self.end.dfv - self.begin.dfv
+        return self.count1
 
     @property
     def total(self):
-        return self.natural + self.dfv
-
-    @property
-    def cycles(self):
-        return self.end.cycles - self.begin.cycles
+        return self.count0 + self.count1
 
     def as_dict(self):
-        return {"core": self.core, "cores": self.cores, "cache_unit": 0, "bank": 0,
-                "natural": self.natural, "dfv": self.dfv, "total": self.total,
-                "window_cycles": self.cycles,
-                "edges_per_million_cycles": self.total * 1e6 / self.cycles}
+        result = dict(core=self.core, cores=self.cores, family=self.family,
+                      index=self.index, domain=self.domain, unit=self.unit,
+                      bank=None if self.domain == 'global' else self.bank,
+                      owner=self.owner, window_cycles=self.cycles)
+        if self.family == 'collision':
+            result.update(natural=self.natural, dfv=self.dfv, total=self.total)
+        else:
+            result.update(events=self.count0, threshold=self.threshold)
+        return result
 
 
-def _snapshot(line, number):
-    payload = line.split(MARKER, 1)[1].strip()
-    tokens = payload.split()
-    fields = {}
-    for token in tokens:
-        if token.count("=") != 1:
-            raise CollisionReportError(f"Line {number}: malformed CSR field {token!r}")
-        key, value = token.split("=", 1)
-        if key in fields:
-            raise CollisionReportError(f"Line {number}: duplicate CSR field {key}")
-        fields[key] = value
-    if fields.keys() != FIELDS:
-        raise CollisionReportError(f"Line {number}: incomplete/unrecognized CSR snapshot fields")
-    if fields["phase"] not in ("BEGIN", "END"):
-        raise CollisionReportError(f"Line {number}: unknown snapshot phase")
-    values = {}
-    try:
-        for key in FIELDS - {"phase"}:
-            if not re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)", fields[key]):
-                raise ValueError(key)
-            values[key] = int(fields[key], 16 if fields[key].lower().startswith("0x") else 10)
-    except ValueError as exc:
-        raise CollisionReportError(f"Line {number}: invalid numeric CSR field") from exc
-    if values["v"] != 1 or values["info"] != COL2_ID:
-        raise CollisionReportError(f"Line {number}: unsupported GPU collision CSR ABI")
-    if not 1 <= values["cores"] <= 0xFFFFFFFF or not 0 <= values["core"] < values["cores"]:
-        raise CollisionReportError(f"Line {number}: invalid reporting core/count")
-    if values["cache"] != 0 or values["bank"] != 0:
-        raise CollisionReportError(f"Line {number}: CSR ABI only observes local cache unit 0 / bank 0")
-    if values["flags"] != 9:
-        raise CollisionReportError(f"Line {number}: unavailable/invalid/at-limit CSR snapshot (flags={values['flags']})")
-    if not 0 <= values["natural"] < COUNTER_LIMIT or not 0 <= values["dfv"] < COUNTER_LIMIT:
-        raise CollisionReportError(f"Line {number}: 12-bit collision counter reached its limit")
-    if not 0 <= values["cycle_lo"] <= 0xFFFFFFFF or not 0 <= values["cycle_hi"] < (1 << 12):
-        raise CollisionReportError(f"Line {number}: invalid 44-bit captured core-cycle count")
-    return Snapshot(values["core"], values["cores"], fields["phase"],
-                    values["natural"], values["dfv"],
-                    (values["cycle_hi"] << 32) | values["cycle_lo"])
+def _fields(line, marker, expected, number):
+    pairs = line.split(marker, 1)[1].strip().split()
+    data = {}
+    for pair in pairs:
+        if pair.count('=') != 1:
+            raise CollisionReportError(f'Line {number}: malformed CSR field')
+        key, value = pair.split('=')
+        if key in data:
+            raise CollisionReportError(f'Line {number}: duplicate CSR field')
+        data[key] = value
+    if set(data) != expected:
+        raise CollisionReportError(f'Line {number}: incomplete/unrecognized CSR fields')
+    for key in expected - {'family', 'phase'}:
+        value = data[key]
+        if not re.fullmatch(r'(?:0[xX][0-9a-fA-F]+|[0-9]+)', value):
+            raise CollisionReportError(f'Line {number}: invalid numeric CSR value')
+        data[key] = int(value, 16 if value.lower().startswith('0x') else 10)
+        if data[key] > LIMIT:
+            raise CollisionReportError(f'Line {number}: numeric CSR value exceeds 32 bits')
+    if data['v'] != 2 or data['family'] not in IDS or data['phase'] not in ('BEGIN', 'END'):
+        raise CollisionReportError(f'Line {number}: unsupported CSR report format')
+    return data
+
+
+def parse_observation_windows(lines):
+    frames, samples = {}, {}
+    expected_cores = None
+    for number, line in enumerate(lines, 1):
+        if 'DFV_CSR_ERROR' in line:
+            raise CollisionReportError(f'GPU reported a CSR error: {line.strip()}')
+        if FRAME_MARKER in line:
+            f = _fields(line, FRAME_MARKER, FRAME_FIELDS, number)
+            key = f['core'], f['family'], f['phase']
+            if key in frames:
+                raise CollisionReportError('Duplicate CSR frame')
+            if not 1 <= f['cores'] <= 4096 or not f['core'] < f['cores']:
+                raise CollisionReportError('Invalid core count/ID')
+            if expected_cores is None:
+                expected_cores = f['cores']
+            if f['cores'] != expected_cores:
+                raise CollisionReportError('Inconsistent core count')
+            if f['info'] != IDS[f['family']] or f['valid'] != 1:
+                raise CollisionReportError('Unavailable/invalid CSR family or incompatible RTL image')
+            if f['count'] > 4096 or (f['family'] == 'collision' and not f['count']):
+                raise CollisionReportError('Invalid monitor count')
+            if f['cycle_hi'] >= 4096:
+                raise CollisionReportError('Invalid captured 44-bit cycle count')
+            if f['phase'] == 'END' and (f['core'], f['family'], 'BEGIN') not in frames:
+                raise CollisionReportError('END frame appeared before BEGIN')
+            frames[key] = f
+        elif SAMPLE_MARKER in line:
+            s = _fields(line, SAMPLE_MARKER, SAMPLE_FIELDS, number)
+            frame_key = s['core'], s['family'], s['phase']
+            if frame_key not in frames:
+                raise CollisionReportError('Sample appeared before its frame')
+            key = frame_key + (s['index'],)
+            if key in samples or s['index'] >= frames[frame_key]['count']:
+                raise CollisionReportError('Duplicate/out-of-range monitor index')
+            if s['flags'] != 9 or s['count0'] == LIMIT or s['count1'] == LIMIT:
+                raise CollisionReportError('Invalid/unavailable/at-limit monitor snapshot')
+            domain, unit, bank = s['desc'] >> 24, (s['desc'] >> 16) & 255, s['desc'] & 65535
+            if s['family'] == 'collision':
+                if (domain not in DOMAINS or s['threshold'] != 0
+                        or (domain == 1 and bank != 0)
+                        or (domain == 2 and (unit != 0 or bank != 0))
+                        or (domain >= 3 and unit != 0)):
+                    raise CollisionReportError('Invalid collision descriptor')
+            elif (domain not in (0, 1) or s['count1'] != 0 or s['threshold'] > 65535
+                  or (domain == 0 and bank != 65535) or (domain == 1 and bank == 65535)):
+                raise CollisionReportError('Invalid throttle descriptor')
+            samples[key] = s
+    if expected_cores is None:
+        raise CollisionReportError('No indexed GPU CSR reports; rebuild RTL and kernels for COL3/THR1')
+    if len(frames) != 4 * expected_cores:
+        raise CollisionReportError('Missing core/family/BEGIN/END frame')
+    if len(samples) != sum(f['count'] for f in frames.values()):
+        raise CollisionReportError('Missing monitor sample (partial report)')
+    result = []
+    shapes = {}
+    for core in range(expected_cores):
+        for family in IDS:
+            a, b = frames.get((core, family, 'BEGIN')), frames.get((core, family, 'END'))
+            if not a or not b or a['count'] != b['count']:
+                raise CollisionReportError('Missing/inconsistent monitor frames')
+            cycles = ((b['cycle_hi'] << 32) | b['cycle_lo']) - ((a['cycle_hi'] << 32) | a['cycle_lo'])
+            if cycles <= 0:
+                raise CollisionReportError('Reset/wrapped/nonpositive measurement interval')
+            identities = set()
+            for index in range(a['count']):
+                x = samples.get((core, family, 'BEGIN', index))
+                y = samples.get((core, family, 'END', index))
+                if not x or not y:
+                    raise CollisionReportError('Missing indexed BEGIN/END pair')
+                if any(x[k] != y[k] for k in ('desc', 'owner', 'threshold')):
+                    raise CollisionReportError('Monitor identity/threshold changed during measurement')
+                if y['count0'] < x['count0'] or y['count1'] < x['count1']:
+                    raise CollisionReportError('Counter reset/wrap during measurement')
+                identity = x['desc'], x['owner']
+                if identity in identities:
+                    raise CollisionReportError('Duplicate physical monitor in a core frame')
+                identities.add(identity)
+                result.append(ObservationWindow(core, expected_cores, family, index,
+                    x['desc'], x['owner'], y['count0'] - x['count0'],
+                    y['count1'] - x['count1'], cycles, x['threshold']))
+            shape = tuple(samples[core, family, 'BEGIN', i]['desc'] for i in range(a['count']))
+            if family in shapes and shapes[family] != shape:
+                raise CollisionReportError('Inconsistent monitor topology across cores')
+            shapes[family] = shape
+    return result
 
 
 def parse_collision_windows(lines):
-    """Require exactly one BEGIN/END pair per reported core; accept genuine zeros.
-
-    Deliberately ignores DFV_COLLISION_* and COLLISION: summary lines. A log
-    containing only these legacy formats fails instead of reporting zero.
-    """
-    snapshots = {}
-    expected_cores = None
-    for number, line in enumerate(lines, 1):
-        if "DFV_CSR_ERROR" in line:
-            raise CollisionReportError(f"GPU reported a CSR measurement error: {line.strip()}")
-        if MARKER not in line:
-            continue
-        snapshot = _snapshot(line, number)
-        if expected_cores is None:
-            expected_cores = snapshot.cores
-        if snapshot.cores != expected_cores:
-            raise CollisionReportError("Inconsistent number of cores in CSR reports")
-        key = (snapshot.core, snapshot.phase)
-        if key in snapshots:
-            raise CollisionReportError(f"Duplicate {snapshot.phase} snapshot from core {snapshot.core}")
-        if snapshot.phase == "END" and (snapshot.core, "BEGIN") not in snapshots:
-            raise CollisionReportError(f"END appeared before BEGIN for core {snapshot.core}")
-        snapshots[key] = snapshot
-    if expected_cores is None:
-        raise CollisionReportError("No GPU CSR snapshots found; use the updated RTL and regression kernels")
-    # Check cardinality first rather than allocate a range from untrusted log data.
-    if len(snapshots) != 2 * expected_cores:
-        raise CollisionReportError("Missing core or BEGIN/END CSR snapshot (partial run)")
-    windows = []
-    for core in range(expected_cores):
-        begin = snapshots.get((core, "BEGIN"))
-        end = snapshots.get((core, "END"))
-        if begin is None or end is None:
-            raise CollisionReportError(f"Missing BEGIN/END CSR snapshot for core {core}")
-        if end.natural < begin.natural or end.dfv < begin.dfv or end.cycles <= begin.cycles:
-            raise CollisionReportError(f"Core {core}: reset/wrapped/nonpositive CSR measurement interval")
-        windows.append(CollisionWindow(core, expected_cores, begin, end))
-    return windows
+    return [w for w in parse_observation_windows(lines) if w.family == 'collision']
 
 
 def collision_counts(windows):
-    return {f"{window.prefix}_{kind}": getattr(window, kind)
-            for window in windows for kind in ("natural", "dfv", "total")}
+    return {f'{w.prefix}_{kind}': getattr(w, kind)
+            for w in windows if w.family == 'collision' for kind in ('natural', 'dfv', 'total')}
 
 
 def collision_cycles(windows):
-    return {window.prefix: window.cycles for window in windows}
+    return {w.prefix: w.cycles for w in windows}

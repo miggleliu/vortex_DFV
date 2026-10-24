@@ -71,6 +71,10 @@ module Vortex import VX_gpu_pkg::*; (
     ) mem_bus_if[`L3_MEM_PORTS]();
 
     `RESET_RELAY (l3_reset, reset);
+    dfv_collision_t l3_collisions [`L3_NUM_BANKS];
+    for (genvar j = 0; j < $size(l3_collisions); ++j) begin : g_unused_l3_collisions
+        `UNUSED_VAR (l3_collisions[j])
+    end
 
     VX_cache_wrap #(
         .INSTANCE_ID    ("l3cache"),
@@ -111,7 +115,8 @@ module Vortex import VX_gpu_pkg::*; (
         .dfv_stall_dcache_core_req (1'b0),
         .dfv_throttle_threshold (16'd0),
         .dfv_bank_throttle_threshold (16'd0),
-        `UNUSED_PIN (dfv_collision)
+        .dfv_collision (l3_collisions),
+        `UNUSED_PIN (dfv_throttle)
     );
 
     for (genvar i = 0; i < `L3_MEM_PORTS; ++i) begin : g_mem_bus_if
@@ -159,6 +164,7 @@ module Vortex import VX_gpu_pkg::*; (
         `endif
 
             .dcr_bus_if         (cluster_dcr_bus_if),
+            .dfv_l3_collisions (l3_collisions[0 +: `UP(DFV_L3_COLL_COUNT)]),
 
             .mem_bus_if         (per_cluster_mem_bus_if[cluster_id * `L2_MEM_PORTS +: `L2_MEM_PORTS]),
 

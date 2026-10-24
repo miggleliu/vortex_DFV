@@ -20,13 +20,51 @@
 
 package VX_gpu_pkg;
 
-    // Local-socket data-cache unit 0, bank 0. This is an observation path;
-    // it does not feed ready/valid or change the existing DFV counter logic.
+    // Separate collision and throttle CSR families. All slots of a family
+    // are captured together in each core; shared monitors must not be summed
+    // again across cores observing the same socket/cluster/chip.
     typedef struct packed {
         logic available;
-        logic [11:0] natural_count;
-        logic [11:0] dfv_count;
+        logic [31:0] natural_count;
+        logic [31:0] dfv_count;
     } dfv_collision_t;
+
+    typedef struct packed {
+        logic available;
+        logic [31:0] event_count;
+        logic [15:0] threshold;
+    } dfv_throttle_t;
+
+    localparam DFV_D_COLL_COUNT = `NUM_DCACHES * `DCACHE_NUM_BANKS;
+    localparam DFV_I_COLL_COUNT = `NUM_ICACHES;
+    localparam DFV_LOCAL_COLL_COUNT = DFV_D_COLL_COUNT + DFV_I_COLL_COUNT + 1;
+    localparam DFV_L2_COLL_COUNT = `L2_ENABLED ? `L2_NUM_BANKS : 0;
+    localparam DFV_L3_COLL_COUNT = `L3_ENABLED ? `L3_NUM_BANKS : 0;
+    localparam DFV_SHARED_COLL_COUNT = DFV_L2_COLL_COUNT + DFV_L3_COLL_COUNT;
+    localparam DFV_COLLISION_COUNT = DFV_LOCAL_COLL_COUNT + DFV_SHARED_COLL_COUNT;
+    localparam DFV_THROTTLE_COUNT = `NUM_DCACHES * (`DCACHE_NUM_BANKS + 1);
+
+    // Descriptor: domain/kind [31:24], unit [23:16], bank [15:0].
+    // Collision domains: 0 D-cache, 1 I-cache, 2 I/D arbiter, 3 L2, 4 L3.
+    // Throttle kinds: 0 global, 1 per bank; global bank is 0xffff.
+    function automatic logic [31:0] dfv_collision_desc(input logic [31:0] index);
+        if (int'(index) < DFV_D_COLL_COUNT)
+            return {8'd0, 8'(index / `DCACHE_NUM_BANKS), 16'(index % `DCACHE_NUM_BANKS)};
+        if (int'(index) < DFV_D_COLL_COUNT + DFV_I_COLL_COUNT)
+            return {8'd1, 8'(index - DFV_D_COLL_COUNT), 16'd0};
+        if (index == DFV_LOCAL_COLL_COUNT - 1)
+            return {8'd2, 8'd0, 16'd0};
+        if (index < DFV_LOCAL_COLL_COUNT + DFV_L2_COLL_COUNT)
+            return {8'd3, 8'd0, 16'(index - DFV_LOCAL_COLL_COUNT)};
+        return {8'd4, 8'd0, 16'(index - DFV_LOCAL_COLL_COUNT - DFV_L2_COLL_COUNT)};
+    endfunction
+
+    function automatic logic [31:0] dfv_throttle_desc(input logic [31:0] index);
+        if ((index % (`DCACHE_NUM_BANKS + 1)) == 0)
+            return {8'd0, 8'(index / (`DCACHE_NUM_BANKS + 1)), 16'hffff};
+        return {8'd1, 8'(index / (`DCACHE_NUM_BANKS + 1)),
+                16'((index % (`DCACHE_NUM_BANKS + 1)) - 1)};
+    endfunction
 
 	localparam NC_BITS = `CLOG2(`NUM_CORES);
 	localparam NW_BITS = `CLOG2(`NUM_WARPS);

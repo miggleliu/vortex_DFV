@@ -22,6 +22,7 @@ module VX_socket import VX_gpu_pkg::*; #(
     // Clock
     input wire              clk,
     input wire              reset,
+    input dfv_collision_t dfv_shared_collisions [`UP(DFV_SHARED_COLL_COUNT)],
 
 `ifdef PERF_ENABLE
     input sysmem_perf_t     sysmem_perf,
@@ -85,6 +86,33 @@ module VX_socket import VX_gpu_pkg::*; #(
     ) icache_mem_bus_if[1]();
 
     `RESET_RELAY (icache_reset, reset);
+    dfv_collision_t icache_collision [`UP(`NUM_ICACHES)];
+    dfv_collision_t dcache_collision [`UP(`NUM_DCACHES) * `DCACHE_NUM_BANKS];
+    dfv_throttle_t dcache_throttle [`UP(`NUM_DCACHES) * (`DCACHE_NUM_BANKS + 1)];
+    dfv_collision_t l1_arb_collision;
+    dfv_collision_t all_collisions [DFV_COLLISION_COUNT];
+    for (genvar j = 0; j < $size(icache_collision); ++j) begin : g_unused_icache_collision
+        `UNUSED_VAR (icache_collision[j])
+    end
+    for (genvar j = 0; j < $size(dcache_collision); ++j) begin : g_unused_dcache_collision
+        `UNUSED_VAR (dcache_collision[j])
+    end
+    for (genvar j = 0; j < $size(dcache_throttle); ++j) begin : g_unused_dcache_throttle
+        `UNUSED_VAR (dcache_throttle[j])
+    end
+    for (genvar j = 0; j < $size(dfv_shared_collisions); ++j) begin : g_unused_dfv_shared_collisions
+        `UNUSED_VAR (dfv_shared_collisions[j])
+    end
+    for (genvar i = 0; i < DFV_D_COLL_COUNT; ++i) begin : g_obs_d
+        assign all_collisions[i] = dcache_collision[i];
+    end
+    for (genvar i = 0; i < DFV_I_COLL_COUNT; ++i) begin : g_obs_i
+        assign all_collisions[DFV_D_COLL_COUNT + i] = icache_collision[i];
+    end
+    assign all_collisions[DFV_LOCAL_COLL_COUNT - 1] = l1_arb_collision;
+    for (genvar i = 0; i < DFV_SHARED_COLL_COUNT; ++i) begin : g_obs_shared
+        assign all_collisions[DFV_LOCAL_COLL_COUNT + i] = dfv_shared_collisions[i];
+    end
 
     VX_cache_cluster #(
         .INSTANCE_ID    (`SFORMATF(("%s-icache", INSTANCE_ID))),
@@ -122,7 +150,8 @@ module VX_socket import VX_gpu_pkg::*; #(
         .dfv_stall_dcache_core_req (1'b0),
         .dfv_throttle_threshold (16'd0),
         .dfv_bank_throttle_threshold (16'd0),
-        `UNUSED_PIN (dfv_collision)
+        .dfv_collision (icache_collision),
+        `UNUSED_PIN (dfv_throttle)
     );
 
     ///////////////////////////////////////////////////////////////////////////
@@ -139,7 +168,6 @@ module VX_socket import VX_gpu_pkg::*; #(
 
     `RESET_RELAY (dcache_reset, reset);
 
-    dfv_collision_t dcache_collision;
 
     // DFV: aggregate stall signals from all cores (OR reduction)
     wire [`SOCKET_SIZE-1:0] per_core_dfv_stall_dcache_fill_rsp;
@@ -198,7 +226,8 @@ module VX_socket import VX_gpu_pkg::*; #(
         .dfv_stall_dcache_core_req (dfv_stall_dcache_core_req_any),
         .dfv_throttle_threshold (dfv_throttle_threshold_val),
         .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold_val),
-        .dfv_collision (dcache_collision)
+        .dfv_collision (dcache_collision),
+        .dfv_throttle (dcache_throttle)
     );
 
     ///////////////////////////////////////////////////////////////////////////
@@ -258,10 +287,13 @@ module VX_socket import VX_gpu_pkg::*; #(
             assign l1_mem_bus_if[1].rsp_ready = l1_mem_bus_ungated_if[1].rsp_ready;
 
             // DFV: count simultaneous icache+dcache fill request collisions
-            wire [11:0] dfv_l1_arb_natural_edge_count;
-            wire [11:0] dfv_l1_arb_dfv_edge_count;
+            wire [31:0] dfv_l1_arb_natural_edge_count;
+            wire [31:0] dfv_l1_arb_dfv_edge_count;
             `UNUSED_VAR (dfv_l1_arb_natural_edge_count)
             `UNUSED_VAR (dfv_l1_arb_dfv_edge_count)
+            assign l1_arb_collision.available = 1'b1;
+            assign l1_arb_collision.natural_count = dfv_l1_arb_natural_edge_count;
+            assign l1_arb_collision.dfv_count = dfv_l1_arb_dfv_edge_count;
             VX_dfv_collision_ctr dfv_l1_arb_ctr (
                 .clk                (clk),
                 .reset              (reset),
@@ -345,7 +377,8 @@ module VX_socket import VX_gpu_pkg::*; #(
             .dfv_fill_bank_mask_out     (per_core_dfv_fill_bank_mask[core_id]),
             .dfv_throttle_threshold_out (per_core_dfv_throttle_threshold[core_id]),
             .dfv_bank_throttle_threshold_out (per_core_dfv_bank_throttle_threshold[core_id]),
-        .dfv_collision (dcache_collision)
+            .dfv_collision (all_collisions),
+            .dfv_throttle (dcache_throttle[0 +: `UP(DFV_THROTTLE_COUNT)])
         );
     end
 
