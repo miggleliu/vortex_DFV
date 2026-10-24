@@ -288,6 +288,9 @@ import VX_fpu_pkg::*;
                 12'h7CE: begin  // VX_CSR_DFV_BANK_THROTTLE_THRESHOLD
                     dfv_bank_throttle_thresh_r <= write_data[15:0];
                 end
+                `VX_CSR_DFV_COLL_CTRL: begin
+                    // Snapshot commands are handled by the accepted-write block below.
+                end
                 default: begin
                     `ASSERT(0, ("%t: *** %s invalid CSR write address: %0h (#%0d)", $time, INSTANCE_ID, write_addr, write_uuid));
                 end
