@@ -93,7 +93,8 @@ module VX_cache_wrap import VX_gpu_pkg::*; #(
     input wire              dfv_stall_dcache_core_req,
     input wire [15:0]       dfv_throttle_threshold,
     input wire [15:0]       dfv_bank_throttle_threshold,
-    output dfv_collision_t dfv_collision
+    output dfv_collision_t dfv_collision [NUM_BANKS],
+    output dfv_throttle_t dfv_throttle [NUM_BANKS + 1]
 );
 
     `STATIC_ASSERT(NUM_BANKS == (1 << `CLOG2(NUM_BANKS)), ("invalid parameter"))
@@ -206,11 +207,17 @@ module VX_cache_wrap import VX_gpu_pkg::*; #(
             .dfv_stall_dcache_core_req (dfv_stall_dcache_core_req),
             .dfv_throttle_threshold (dfv_throttle_threshold),
             .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold),
-        .dfv_collision (dfv_collision)
+            .dfv_collision (dfv_collision),
+            .dfv_throttle (dfv_throttle)
         );
 
     end else begin : g_passthru
-        assign dfv_collision = '0; // monitor unavailable when bypassed
+        for (genvar i = 0; i < NUM_BANKS; ++i) begin : g_coll
+            assign dfv_collision[i] = '0;
+        end
+        for (genvar i = 0; i < NUM_BANKS + 1; ++i) begin : g_thr
+            assign dfv_throttle[i] = '0;
+        end
 
         `UNUSED_VAR (dfv_enable)
         `UNUSED_VAR (dfv_stall_dcache_fill_rsp)

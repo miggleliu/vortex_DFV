@@ -85,7 +85,8 @@ module VX_cache import VX_gpu_pkg::*; #(
     input wire              dfv_stall_dcache_core_req,
     input wire [15:0]       dfv_throttle_threshold,
     input wire [15:0]       dfv_bank_throttle_threshold,
-    output dfv_collision_t dfv_collision
+    output dfv_collision_t dfv_collision [NUM_BANKS],
+    output dfv_throttle_t dfv_throttle [NUM_BANKS + 1]
 );
 
     `STATIC_ASSERT(NUM_BANKS == (1 << `CLOG2(NUM_BANKS)), ("invalid parameter: number of banks must be power of 2"))
@@ -414,6 +415,7 @@ module VX_cache import VX_gpu_pkg::*; #(
     // DFV: detect when no core request has been valid for threshold cycles
     // (global -- used for Type 2 full-pipeline-freeze detection)
     if (DFV_THROTTLE_ENABLE) begin : g_dfv_throttle
+        assign dfv_throttle[0].available = 1'b1;
         wire dfv_core_req_throttle_reached;
         `UNUSED_VAR (dfv_core_req_throttle_reached)
         VX_dfv_throttle_ctr dfv_core_req_throttle (
@@ -421,7 +423,9 @@ module VX_cache import VX_gpu_pkg::*; #(
             .reset     (reset),
             .signal_in (|per_bank_core_req_valid),
             .threshold (dfv_throttle_threshold),
-            .reached   (dfv_core_req_throttle_reached)
+            .reached   (dfv_core_req_throttle_reached),
+            .event_count (dfv_throttle[0].event_count),
+            .observed_threshold (dfv_throttle[0].threshold)
         );
 
         // DFV Type 3: per-bank idle-cycle counters. Same module as the
@@ -432,6 +436,7 @@ module VX_cache import VX_gpu_pkg::*; #(
         // the $display disambiguates which bank fired, same pattern already
         // used by dfv_bank_ctr below in the g_banks loop.
         for (genvar i = 0; i < NUM_BANKS; ++i) begin : g_dfv_bank_throttle
+            assign dfv_throttle[i+1].available = 1'b1;
             wire dfv_bank_throttle_reached;
             `UNUSED_VAR (dfv_bank_throttle_reached)
             VX_dfv_throttle_ctr dfv_bank_throttle (
@@ -439,10 +444,15 @@ module VX_cache import VX_gpu_pkg::*; #(
                 .reset     (reset),
                 .signal_in (per_bank_core_req_valid[i]),
                 .threshold (dfv_bank_throttle_threshold),
-                .reached   (dfv_bank_throttle_reached)
+                .reached   (dfv_bank_throttle_reached),
+                .event_count (dfv_throttle[i+1].event_count),
+                .observed_threshold (dfv_throttle[i+1].threshold)
             );
         end
     end else begin : g_dfv_throttle_disabled
+        for (genvar i = 0; i < NUM_BANKS + 1; ++i) begin : g_obs
+            assign dfv_throttle[i] = '0;
+        end
         `UNUSED_VAR (dfv_throttle_threshold)
         `UNUSED_VAR (dfv_bank_throttle_threshold)
     end
@@ -450,8 +460,8 @@ module VX_cache import VX_gpu_pkg::*; #(
     for (genvar bank_id = 0; bank_id < NUM_BANKS; ++bank_id) begin : g_banks
 
         // DFV: count simultaneous fill+core_req collisions at each bank
-        wire [11:0] dfv_bank_natural_edge_count;
-        wire [11:0] dfv_bank_dfv_edge_count;
+        wire [31:0] dfv_bank_natural_edge_count;
+        wire [31:0] dfv_bank_dfv_edge_count;
         `UNUSED_VAR (dfv_bank_natural_edge_count)
         `UNUSED_VAR (dfv_bank_dfv_edge_count)
         VX_dfv_collision_ctr dfv_bank_ctr (
@@ -464,11 +474,9 @@ module VX_cache import VX_gpu_pkg::*; #(
             .dfv_edge_count     (dfv_bank_dfv_edge_count)
         );
 
-        if (bank_id == 0) begin : g_dfv_collision_observation
-            assign dfv_collision.available = 1'b1;
-            assign dfv_collision.natural_count = dfv_bank_natural_edge_count;
-            assign dfv_collision.dfv_count = dfv_bank_dfv_edge_count;
-        end
+        assign dfv_collision[bank_id].available = 1'b1;
+        assign dfv_collision[bank_id].natural_count = dfv_bank_natural_edge_count;
+        assign dfv_collision[bank_id].dfv_count = dfv_bank_dfv_edge_count;
 
         VX_cache_bank #(
             .BANK_ID      (bank_id),

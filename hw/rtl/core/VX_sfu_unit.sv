@@ -53,7 +53,8 @@ module VX_sfu_unit import VX_gpu_pkg::*; #(
     output wire [15:0]       dfv_fill_bank_mask,
     output wire [15:0]      dfv_throttle_threshold,
     output wire [15:0]      dfv_bank_throttle_threshold,
-    input dfv_collision_t dfv_collision
+    input dfv_throttle_t dfv_throttle [`UP(DFV_THROTTLE_COUNT)],
+    input dfv_collision_t dfv_collision [DFV_COLLISION_COUNT]
 );
     `UNUSED_SPARAM (INSTANCE_ID)
     localparam BLOCK_SIZE   = 1;
@@ -158,6 +159,7 @@ module VX_sfu_unit import VX_gpu_pkg::*; #(
         .dfv_fill_bank_mask (dfv_fill_bank_mask),
         .dfv_throttle_threshold (dfv_throttle_threshold),
         .dfv_bank_throttle_threshold (dfv_bank_throttle_threshold),
+        .dfv_throttle (dfv_throttle),
         .dfv_collision (dfv_collision)
     );
 

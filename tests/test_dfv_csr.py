@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Contract tests for GPU CSR report parsing and combo-runner integration."""
+"""Contracts for all-monitor collision/throttle reports and combo execution."""
 from contextlib import redirect_stdout
 import csv
 import io
-import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,196 +10,177 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-
 import dfv_csr as csr
 import run_dfv_combos as runner
 
+COLL_DESCS = [0, 1, 0x01000000, 0x02000000, 0x03000000, 0x04000000]
+THR_DESCS = [65535, 0x01000000, 0x01000001]
 
-def record(phase, **changes):
-    fields = {"v": 1, "core": 0, "cores": 1, "cache": 0, "bank": 0,
-              "phase": phase, "info": "0x434f4c32", "flags": 9,
-              "natural": 2, "dfv": 3, "cycle_lo": 100, "cycle_hi": 0}
-    if phase == "END":
-        fields.update(natural=7, dfv=14, cycle_lo=300)
-    fields.update(changes)
-    return "#0: DFV_CSR_SNAPSHOT " + " ".join(f"{key}={value}" for key, value in fields.items()) + "\n"
+
+def report(cores=1, zero=False):
+    lines=[]
+    for core in range(cores):
+        for phase in ('BEGIN','END'):
+            for family,descs in [('collision',COLL_DESCS),('throttle',THR_DESCS)]:
+                lo = (100 if family=='collision' else 101) + (0 if phase=='BEGIN' else (200 if family=='collision' else 300))
+                lines.append(f'#0: DFV_CSR_FRAME v=2 core={core} cores={cores} family={family} phase={phase} info=0x{csr.IDS[family]:08x} count={len(descs)} valid=1 cycle_lo={lo} cycle_hi=0\n')
+                for index,desc in enumerate(descs):
+                    a,b=(5000+index,6000+index) if family=='collision' else (10+index,0)
+                    if phase=='END' and not zero:
+                        a+=5;b+=11 if family=='collision' else 0
+                    threshold=0 if family=='collision' else 50
+                    lines.append(f'#0: DFV_CSR_SAMPLE v=2 core={core} family={family} phase={phase} index={index} desc=0x{desc:08x} owner=0 flags=9 count0={a} count1={b} threshold={threshold}\n')
+    return lines
 
 
 class ParserTests(unittest.TestCase):
-    def test_deltas_and_rates_use_the_snapshot_window(self):
-        windows = csr.parse_collision_windows([record("BEGIN"), record("END")])
-        self.assertEqual((windows[0].natural, windows[0].dfv, windows[0].total, windows[0].cycles), (5, 11, 16, 200))
-        counts = csr.collision_counts(windows)
-        rows = [("vecadd", "none", 1000, 900000, 0.1, "PASS", counts, 0)]
-        rates = runner.compute_collision_rates(rows, list(counts), [csr.collision_cycles(windows)])
-        self.assertEqual(rates[0]["core0_cache0_bank0_total"], 16 / 200)
+    def test_every_domain_bank_and_throttle_kind(self):
+        windows=csr.parse_observation_windows(report())
+        self.assertEqual(len(windows),9)
+        self.assertEqual({w.domain for w in windows},{'dcache','icache','l1arb','l2','l3','global','bank'})
+        self.assertEqual([w.bank for w in windows if w.domain=='dcache'],[0,1])
+        self.assertTrue(all((w.natural,w.dfv,w.total,w.cycles)==(5,11,16,200) for w in windows if w.family=='collision'))
+        self.assertTrue(all(w.count0==5 and w.count1==0 and w.cycles==300 for w in windows if w.family=='throttle'))
 
-    def test_valid_zero_and_cycle_low_word_carry(self):
-        window = csr.parse_collision_windows([
-            record("BEGIN", cycle_lo=0xFFFFFFF0, cycle_hi=3),
-            record("END", natural=2, dfv=3, cycle_lo=0x10, cycle_hi=4)])[0]
-        self.assertEqual((window.total, window.cycles), (0, 32))
+    def test_genuine_zero_and_counts_beyond_old_12_bit_limit(self):
+        self.assertTrue(all(w.total==0 for w in csr.parse_observation_windows(report(zero=True))))
+        self.assertEqual(csr.parse_observation_windows(report())[0].total,16)
 
-    def test_multicore_records_stay_separate(self):
-        windows = csr.parse_collision_windows([
-            record("BEGIN", core=1, cores=2), record("BEGIN", cores=2),
-            record("END", cores=2), record("END", core=1, cores=2, natural=4)])
-        self.assertEqual([window.core for window in windows], [0, 1])
-        self.assertEqual(len(csr.collision_counts(windows)), 6)
-
-    def test_legacy_and_summary_lines_cannot_supply_counts(self):
-        with self.assertRaises(csr.CollisionReportError):
-            csr.parse_collision_windows([
-                "123: DFV_COLLISION_DFV: top.dcache.g_banks[0].dfv_bank_ctr edge_count=88\n",
-                "COLLISION: dfv_bank0=99\n"])
-        lines = [record("BEGIN"), "COLLISION: core0_cache0_bank0_total=99999\n", record("END")]
-        self.assertEqual(csr.parse_collision_windows(lines)[0].total, 16)
-
-    def test_invalid_partial_saturated_or_reordered_records(self):
-        invalid = [
-            [], [record("BEGIN")], [record("END"), record("BEGIN")],
-            [record("BEGIN"), record("BEGIN"), record("END")],
-            [record("BEGIN", cores=2), record("END", cores=2)],
-            [record("BEGIN"), record("END", cores=2)],
-            [record("BEGIN"), record("END", flags=1)],
-            [record("BEGIN"), record("END", flags=8)],
-            [record("BEGIN"), record("END", flags=11)],
-            [record("BEGIN"), record("END", flags=13)],
-            [record("BEGIN"), record("END", flags=25)],
-            [record("BEGIN", natural=4095), record("END")],
-            [record("BEGIN"), record("END", dfv=4095)],
-            [record("BEGIN"), record("END", natural=-1)],
-            [record("BEGIN"), record("END", info="0x434f4c31")],
-            [record("BEGIN"), record("END", bank=1)],
-            [record("BEGIN"), record("END", cache=1)],
-            [record("BEGIN"), record("END", core=1)],
-            [record("BEGIN"), record("END", cycle_lo=100)],
-            [record("BEGIN"), record("END", cycle_hi=4096)],
-            [record("BEGIN"), record("END", natural=1)],
-            [record("BEGIN"), record("END", dfv=1)],
-            [record("BEGIN"), record("END").replace("flags=9", "")],
-            [record("BEGIN"), record("END").rstrip() + " flags=9\n"],
-            [record("BEGIN"), record("END"), "DFV_CSR_ERROR bad reading\n"],
-        ]
-        for lines in invalid:
-            with self.subTest(lines=lines), self.assertRaises(csr.CollisionReportError):
-                csr.parse_collision_windows(lines)
-
-    def test_trim_preserves_raw_records_and_is_reparseable(self):
+    def test_calibration_analyzer_uses_csr_data(self):
+        import analyze_bank_throttle as analyzer
         with tempfile.TemporaryDirectory() as temp:
-            logfile = Path(temp) / "run.log"
-            logfile.write_text(record("BEGIN") + record("END") + "noise\n" * 250 + "PERF: instrs=900, cycles=900000, IPC=0.001\n")
-            with patch.object(runner, "DFV_TEST_TYPE", 1):
-                first = runner.trim_log(str(logfile), keep=3)
-                second = runner.trim_log(str(logfile), keep=3)
-            self.assertEqual(first[1], second[1])
-            self.assertEqual(first[4], second[4])
-            self.assertFalse(first[5])
-            self.assertEqual(csr.parse_collision_windows(logfile.read_text().splitlines())[0].total, 16)
+            path=Path(temp)/'run.log';path.write_text(''.join(report()))
+            with redirect_stdout(io.StringIO()): windows=analyzer.summarize(path)
+            self.assertEqual(len(windows),3)
+            self.assertEqual({w.count0 for w in windows},{5})
+
+    def test_shared_reader_cores_stay_separate(self):
+        windows=csr.parse_observation_windows(report(cores=2))
+        self.assertEqual(len(windows),18)
+        self.assertEqual({w.core for w in windows},{0,1})
+        self.assertEqual(len({w.prefix for w in windows}),18)
+
+    def test_legacy_logs_never_supply_metrics(self):
+        with self.assertRaises(csr.CollisionReportError):
+            csr.parse_observation_windows(['DFV_COLLISION_DFV edge_count=999\n','DFV_THROTTLE_REACHED threshold=50\n'])
+        lines=report()+['DFV_COLLISION_DFV edge_count=999999\n']
+        self.assertEqual(csr.parse_observation_windows(lines)[0].total,16)
+
+    def test_invalid_partial_or_saturated(self):
+        mutations=[
+            lambda x:x[:-1],lambda x:x+[x[1]],
+            lambda x:[v for v in x if not ('family=throttle' in v)],
+            lambda x:[v.replace('info=0x434f4c33','info=0x434f4c32') for v in x],
+            lambda x:[v.replace('valid=1','valid=0') for v in x],
+            lambda x:[v.replace('flags=9','flags=11') for v in x],
+            lambda x:[v.replace('flags=9','flags=1') for v in x],
+            lambda x:[v.replace('count0=5000','count0=4294967295') for v in x],
+            lambda x:[v.replace('cycle_hi=0','cycle_hi=4096') for v in x],
+            lambda x:[v.replace('index=5','index=7') for v in x],
+            lambda x:[v.replace('cores=1','cores=2') for v in x],
+            lambda x:[v.replace('cycle_lo=300','cycle_lo=100') for v in x],
+            lambda x:[v.replace('count0=5005','count0=1') for v in x],
+            lambda x:[v.replace('desc=0x04000000','desc=0x03000000') for v in x],
+            lambda x:[v.replace('threshold=50','threshold=51') if 'phase=END' in v else v for v in x],
+            lambda x:[v.replace('owner=0','owner=2') if 'phase=END' in v else v for v in x],
+            lambda x:x+['DFV_CSR_ERROR invalid\n'],
+        ]
+        for mutate in mutations:
+            with self.subTest(mutate=mutate),self.assertRaises(csr.CollisionReportError):
+                csr.parse_observation_windows(mutate(report()))
+
+    def test_both_family_intervals_and_rates(self):
+        windows=csr.parse_observation_windows(report())
+        for test_type,cycle in [(1,200),(2,300),(3,300)]:
+            metrics,intervals,thresholds=runner.window_metrics(windows,test_type)
+            self.assertTrue(metrics)
+            self.assertTrue(all(v==cycle for v in intervals.values()))
+            self.assertEqual(bool(thresholds),test_type!=1)
+        self.assertEqual(runner.target_coverage(windows,1,'icache_fill_req_N_dcache_fill_req'),'HIT')
+        self.assertEqual(runner.target_coverage(csr.parse_observation_windows(report(zero=True)),1,'none'),'ZERO_EVENTS')
+
+    def test_trim_preserves_all_raw_frames_and_samples(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'run.log'
+            path.write_text(''.join(report())+'noise\n'*250+'PERF: instrs=900, cycles=900000, IPC=0.001\n')
+            first=runner.trim_log(str(path),3,keep=3)
+            second=runner.trim_log(str(path),3,keep=3)
+            self.assertFalse(first[5]);self.assertEqual(first[2],second[2])
+            self.assertEqual(len(csr.parse_observation_windows(path.read_text().splitlines())),9)
 
 
 class RunnerTests(unittest.TestCase):
-    def run_fixture(self, valid=True, interrupted=False):
+    def fixture(self,test_type=1,valid=True,interrupted=False):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            (root / "reg/vecadd").mkdir(parents=True)
-            (root / "build").mkdir()
-            kernel = root / "reg/vecadd/kernel.cpp"
-            source = ("csr_write(VX_CSR_DFV_CTRL, 1);\n" +
-                      "\n".join(f"csr_write({name}, 0);" for _, name in runner.STALL_TYPES) +
-                      "\ncsr_write(VX_CSR_DFV_CTRL, 0);\n")
-            kernel.write_text(source)
-            modes = []
-            def launch(command, **kwargs):
+            root=Path(temp);(root/'reg/vecadd').mkdir(parents=True);(root/'build').mkdir()
+            kernel=root/'reg/vecadd/kernel.cpp'
+            original='csr_write(VX_CSR_DFV_CTRL, 1);\n'+'\n'.join(f'csr_write({name}, 0);' for _,name in runner.STALL_TYPES)+'\ncsr_write(VX_CSR_DFV_CTRL, 0);\n'
+            kernel.write_text(original);modes=[]
+            def launch(command,**kwargs):
                 modes.append(kernel.read_text().splitlines()[0])
+                if interrupted: raise KeyboardInterrupt
+                kwargs['stdout'].write((''.join(report()) if valid else 'legacy RTL display only\n')+'PERF: instrs=900, cycles=900000, IPC=0.001\n')
+                return subprocess.CompletedProcess(command,0)
+            with patch.multiple(runner,REG_DIR=str(root/'reg'),BUILD_DIR=str(root/'build'),RUN_LOG=str(root/'build/run.log'),LOG_BASE=str(root/'logs')),patch.object(runner.subprocess,'run',side_effect=launch),patch.object(sys,'argv',['run_dfv_combos.py','--type',str(test_type),'--apps','vecadd']),redirect_stdout(io.StringIO()):
                 if interrupted:
-                    raise KeyboardInterrupt
-                log = record("BEGIN") + record("END") if valid else "legacy DFV_COLLISION_DFV only\n"
-                kwargs["stdout"].write(log + "PERF: instrs=900, cycles=900000, IPC=0.001\n")
-                return subprocess.CompletedProcess(command, 0)
-            with patch.multiple(runner, REG_DIR=str(root / "reg"), BUILD_DIR=str(root / "build"),
-                                RUN_LOG=str(root / "build/run.log"), LOG_BASE=str(root / "logs")), \
-                    patch.object(runner.subprocess, "run", side_effect=launch), \
-                    patch.object(sys, "argv", ["run_dfv_combos.py", "--type", "1", "--apps", "vecadd"]), \
-                    redirect_stdout(io.StringIO()):
-                if interrupted:
-                    with self.assertRaises(KeyboardInterrupt):
-                        runner.main()
-                    self.assertEqual(kernel.read_text(), source)
-                    return
-                result = runner.main()
-            self.assertEqual(kernel.read_text(), source)
-            self.assertIn(", 0);", modes[0])
-            self.assertIn(", 1);", modes[1])
-            with (root / "logs/dfv_perf.csv").open() as stream:
-                rows = list(csv.DictReader(stream))
-            self.assertEqual(len(rows), 3)
-            self.assertEqual(result, 0 if valid else 1)
+                    with self.assertRaises(KeyboardInterrupt):runner.main()
+                    self.assertEqual(kernel.read_text(),original);return
+                rc=runner.main()
+            self.assertEqual(kernel.read_text(),original)
+            self.assertIn(', 0);',modes[0]);self.assertIn(', 1);',modes[1])
+            with (root/'logs'/f'dfv_type{test_type}'/'dfv_perf.csv').open() as stream:rows=list(csv.DictReader(stream))
+            self.assertEqual(len(rows),4 if test_type==3 else 3)
+            self.assertEqual(rc,0 if valid else 1)
+            self.assertTrue(all(row['status']==('PASS' if valid else 'CSR_ERROR') for row in rows))
             if valid:
-                self.assertTrue(all(row["status"] == "PASS" for row in rows))
-                self.assertEqual(float(rows[0]["core0_cache0_bank0_total_rate"]), 16 / 200)
-                self.assertEqual(rows[0]["core0_cache0_bank0_window_cycles"], "200")
-            else:
-                self.assertTrue(all(row["status"] == "CSR_ERROR" for row in rows))
-                self.assertTrue(all(row["csr_error"] for row in rows))
+                key='core0_collision_dcache_owner0_unit0_bank1_total' if test_type==1 else ('core0_throttle_global_owner0_unit0_events' if test_type==2 else 'core0_throttle_bank_owner0_unit0_bank1_events')
+                self.assertEqual(float(rows[0][key+'_rate']),16/200 if test_type==1 else 5/300)
+                self.assertEqual(rows[0]['coverage'],'HIT')
 
-    def test_successful_runs_and_exact_source_restore(self):
-        self.run_fixture()
+    def test_all_three_types_use_their_csr_family(self):
+        for test_type in (1,2,3):
+            with self.subTest(test_type=test_type):self.fixture(test_type)
 
-    def test_missing_csr_cannot_pass_even_when_app_succeeds(self):
-        self.run_fixture(valid=False)
+    def test_missing_csr_does_not_pass(self):
+        for test_type in (1,2,3):self.fixture(test_type,valid=False)
 
     def test_interruption_restores_source(self):
-        self.run_fixture(interrupted=True)
+        self.fixture(interrupted=True)
 
 
 class ProducerTests(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("c++"), "native C++ compiler unavailable")
-    def test_actual_cpp_report_format_and_validation(self):
-        root = Path(__file__).resolve().parents[1]
-        source = r'''
+    @unittest.skipUnless(shutil.which('c++'),'native compiler unavailable')
+    def test_actual_cpp_producer_matches_both_family_parser(self):
+        root=Path(__file__).resolve().parents[1]
+        source=r'''
 #include <cstdarg>
 #include <cstdio>
-#include <cstdint>
 #define __VX_INTRINSICS_H__
-static unsigned reporting_core;
-static inline unsigned vx_core_id() { return reporting_core; }
-static inline unsigned vx_num_cores() { return 2; }
+static inline unsigned vx_core_id(){return 0;}
+static inline unsigned vx_num_cores(){return 1;}
 #include <vx_dfv_collision_report.h>
-extern "C" int vx_printf(const char* format, ...) {
-    va_list args; va_start(args, format);
-    int result = std::vprintf(format, args); va_end(args); return result;
-}
-int main(int argc, char**) {
-    bool invalid = argc > 1;
-    vx_dfv_collision_snapshot_t begin = {VX_DFV_COLLISION_ID, 9, 2, 3, 100, 0};
-    vx_dfv_collision_snapshot_t end = {VX_DFV_COLLISION_ID, 9, 7, 14, 300, 0};
-    if (invalid) { end.natural_count = 4095; end.status = 11; }
-    for (reporting_core = 0; reporting_core < 2; ++reporting_core) {
-        int result = vx_dfv_collision_report(&begin, &end);
-        if ((result != 0) != invalid) return 42;
-    }
-    return 0;
+extern "C" int vx_printf(const char* f,...){va_list a;va_start(a,f);int n=std::vprintf(f,a);va_end(a);return n;}
+int main(int argc,char**){
+ vx_dfv_sample_t ca[2]={{0,0,9,5000,6000,0},{0x02000000,0,9,8,9,0}};
+ vx_dfv_sample_t cb[2]={{0,0,9,5005,6011,0},{0x02000000,0,9,10,13,0}};
+ vx_dfv_sample_t ta[1]={{65535,0,9,10,0,50}},tb[1]={{65535,0,9,15,0,50}};
+ vx_dfv_snapshot_t a={{VX_DFV_COLLISION_ID,2,1,100,0,ca},{VX_DFV_THROTTLE_ID,1,1,101,0,ta}};
+ vx_dfv_snapshot_t b={{VX_DFV_COLLISION_ID,2,1,300,0,cb},{VX_DFV_THROTTLE_ID,1,1,401,0,tb}};
+ if(argc>1){tb[0].count0=0xffffffff;tb[0].status=11;}
+ int result=vx_dfv_report(&a,&b);return ((result!=0)!=(argc>1))?42:0;
 }
 '''
         with tempfile.TemporaryDirectory() as temp:
-            work = Path(temp)
-            subprocess.run([sys.executable, str(root / "hw/scripts/gen_config.py"),
-                            "-i", str(root / "hw/rtl/VX_types.vh"),
-                            "-o", str(work / "VX_types.h")], check=True, capture_output=True, text=True)
-            (work / "report.cpp").write_text(source)
-            subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Werror",
-                            "-I" + str(work), "-I" + str(root / "kernel/include"),
-                            str(work / "report.cpp"), "-o", str(work / "report")],
-                           check=True, capture_output=True, text=True)
-            valid = subprocess.run([str(work / "report")], check=True, capture_output=True, text=True)
-            windows = csr.parse_collision_windows(valid.stdout.splitlines())
-            self.assertEqual(len(windows), 2)
-            self.assertTrue(all(window.total == 16 and window.cycles == 200 for window in windows))
-            invalid = subprocess.run([str(work / "report"), "at-limit"], check=True, capture_output=True, text=True)
-            with self.assertRaises(csr.CollisionReportError):
-                csr.parse_collision_windows(invalid.stdout.splitlines())
+            work=Path(temp)
+            subprocess.run([sys.executable,str(root/'hw/scripts/gen_config.py'),'-i',str(root/'hw/rtl/VX_types.vh'),'-o',str(work/'VX_types.h')],check=True,capture_output=True)
+            (work/'report.cpp').write_text(source)
+            subprocess.run(['c++','-std=gnu++17','-Wall','-Wextra','-Werror','-I'+str(work),'-I'+str(root/'kernel/include'),str(work/'report.cpp'),'-o',str(work/'report')],check=True,capture_output=True)
+            valid=subprocess.run([str(work/'report')],check=True,capture_output=True,text=True)
+            windows=csr.parse_observation_windows(valid.stdout.splitlines())
+            self.assertEqual([w.total for w in windows if w.family=='collision'],[16,6])
+            self.assertEqual([w.cycles for w in windows],[200,200,300])
+            bad=subprocess.run([str(work/'report'),'bad'],check=True,capture_output=True,text=True)
+            with self.assertRaises(csr.CollisionReportError):csr.parse_observation_windows(bad.stdout.splitlines())
 
 
-if __name__ == "__main__":
-    unittest.main()
+if __name__=='__main__':unittest.main()

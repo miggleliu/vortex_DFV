@@ -202,17 +202,32 @@
 `define VX_CSR_VTYPE                    12'hC21
 `define VX_CSR_VLENB                    12'hC22
 
-// DFV collision observation: custom GPU CSRs, shared by RTL and software.
-// Counts refer to cache unit 0 / bank 0 of the reading core's local socket.
-`define VX_CSR_DFV_COLL_CTRL             12'h7CF // write 1: capture; write 0: invalidate
-`define VX_CSR_DFV_COLL_INFO             12'hCC8 // COL2 ABI identifier
-`define VX_CSR_DFV_COLL_NATURAL          12'hCC9 // captured natural edge count
-`define VX_CSR_DFV_COLL_DFV              12'hCCA // captured DFV edge count
-`define VX_CSR_DFV_COLL_STATUS           12'hCCB // valid, at-limit flags, available
-`define VX_CSR_DFV_COLL_CYCLE_LO         12'hCCC // captured core-cycle counter [31:0]
-`define VX_CSR_DFV_COLL_CYCLE_HI         12'hCCD // captured core-cycle counter [43:32]
-`define VX_DFV_COLLISION_ID              32'h434F4C32
-`define VX_DFV_COLLISION_WIDTH           12
+// Indexed DFV observations: separate collision and throttle CSR families.
+`define VX_CSR_DFV_COLL_CTRL             12'h7CF
+`define VX_CSR_DFV_COLL_SELECT           12'h7D0
+`define VX_CSR_DFV_THR_CTRL              12'h7D1
+`define VX_CSR_DFV_THR_SELECT            12'h7D2
+`define VX_CSR_DFV_COLL_INFO             12'hCC8
+`define VX_CSR_DFV_COLL_NATURAL          12'hCC9
+`define VX_CSR_DFV_COLL_DFV              12'hCCA
+`define VX_CSR_DFV_COLL_STATUS           12'hCCB
+`define VX_CSR_DFV_COLL_CYCLE_LO         12'hCCC
+`define VX_CSR_DFV_COLL_CYCLE_HI         12'hCCD
+`define VX_CSR_DFV_COLL_COUNT            12'hCCE
+`define VX_CSR_DFV_COLL_DESC             12'hCCF
+`define VX_CSR_DFV_COLL_OWNER            12'hCD0
+`define VX_CSR_DFV_THR_INFO              12'hCD8
+`define VX_CSR_DFV_THR_EVENTS            12'hCD9
+`define VX_CSR_DFV_THR_STATUS            12'hCDA
+`define VX_CSR_DFV_THR_CYCLE_LO          12'hCDB
+`define VX_CSR_DFV_THR_CYCLE_HI          12'hCDC
+`define VX_CSR_DFV_THR_COUNT             12'hCDD
+`define VX_CSR_DFV_THR_DESC              12'hCDE
+`define VX_CSR_DFV_THR_OWNER             12'hCDF
+`define VX_CSR_DFV_THR_THRESHOLD         12'hCE0
+`define VX_DFV_COLLISION_ID              32'h434F4C33
+`define VX_DFV_THROTTLE_ID               32'h54485231
+`define VX_DFV_COLLISION_WIDTH           32
 
 // GPGU CSRs
 

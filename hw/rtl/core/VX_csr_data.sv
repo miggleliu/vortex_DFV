@@ -80,13 +80,18 @@ import VX_fpu_pkg::*;
     output wire [15:0]                   dfv_fill_bank_mask,
     output wire [15:0]                  dfv_throttle_threshold,
     output wire [15:0]                  dfv_bank_throttle_threshold,
-    input dfv_collision_t dfv_collision,
+    input dfv_throttle_t dfv_throttle [`UP(DFV_THROTTLE_COUNT)],
+    input dfv_collision_t dfv_collision [DFV_COLLISION_COUNT],
     input wire write_ready
 );
 
     `UNUSED_VAR (reset)
     `UNUSED_VAR (write_wid)
     `UNUSED_VAR (write_data)
+
+    `STATIC_ASSERT(`NUM_DCACHES <= 256 && `NUM_ICACHES <= 256
+        && `DCACHE_NUM_BANKS <= 65535 && `L2_NUM_BANKS <= 65535
+        && `L3_NUM_BANKS <= 65535, ("DFV descriptor capacity exceeded"))
 
     // CSRs Write /////////////////////////////////////////////////////////////
 
@@ -288,8 +293,10 @@ import VX_fpu_pkg::*;
                 12'h7CE: begin  // VX_CSR_DFV_BANK_THROTTLE_THRESHOLD
                     dfv_bank_throttle_thresh_r <= write_data[15:0];
                 end
-                `VX_CSR_DFV_COLL_CTRL: begin
-                    // Snapshot commands are handled by the accepted-write block below.
+                `VX_CSR_DFV_COLL_SELECT,
+                `VX_CSR_DFV_THR_CTRL,
+                `VX_CSR_DFV_THR_SELECT: begin
+                    // Observation writes are handled below on acceptance.
                 end
                 default: begin
                     `ASSERT(0, ("%t: *** %s invalid CSR write address: %0h (#%0d)", $time, INSTANCE_ID, write_addr, write_uuid));
@@ -298,34 +305,77 @@ import VX_fpu_pkg::*;
         end
     end
 
-    // Per-core snapshot of a shared local-socket monitor. Software chooses
-    // one reporting core/warp/thread. Counts and time are sampled together;
-    // later CSR reads and reporting stores cannot change the held values.
-    dfv_collision_t collision_snapshot;
-    reg [PERF_CTR_BITS-1:0] collision_cycles;
-    reg collision_valid;
-    wire [31:0] collision_status = {28'b0, collision_snapshot.available,
-        (&collision_snapshot.dfv_count), (&collision_snapshot.natural_count),
-        collision_valid};
+    // Each family captures all its slots at once. Changing its selector only
+    // changes readout, never the held data or the other family's state.
+    dfv_collision_t collision_snapshot [DFV_COLLISION_COUNT];
+    dfv_throttle_t throttle_snapshot [`UP(DFV_THROTTLE_COUNT)];
+    reg [PERF_CTR_BITS-1:0] collision_cycles, throttle_cycles;
+    reg collision_valid, throttle_valid;
+    reg [31:0] collision_select, throttle_select;
+    wire collision_index_valid = collision_select < DFV_COLLISION_COUNT;
+    wire throttle_index_valid;
+    if (DFV_THROTTLE_COUNT == 0) begin : g_no_throttle_monitors
+        assign throttle_index_valid = 1'b0;
+    end else begin : g_has_throttle_monitors
+        assign throttle_index_valid = throttle_select < DFV_THROTTLE_COUNT;
+    end
+    wire dfv_collision_t selected_collision = collision_index_valid
+        ? collision_snapshot[`UP(`CLOG2(DFV_COLLISION_COUNT))'(collision_select)] : '0;
+    wire dfv_throttle_t selected_throttle = throttle_index_valid
+        ? throttle_snapshot[`UP(`CLOG2(`UP(DFV_THROTTLE_COUNT)))'(throttle_select)] : '0;
+    wire [31:0] collision_status = {27'b0, !collision_index_valid,
+        selected_collision.available, (&selected_collision.dfv_count),
+        (&selected_collision.natural_count), collision_valid};
+    wire [31:0] throttle_status = {27'b0, !throttle_index_valid,
+        selected_throttle.available, 1'b0, (&selected_throttle.event_count), throttle_valid};
+    wire [31:0] collision_owner = (collision_select < DFV_LOCAL_COLL_COUNT)
+        ? 32'(CORE_ID / `SOCKET_SIZE)
+        : ((collision_select < DFV_LOCAL_COLL_COUNT + DFV_L2_COLL_COUNT)
+            ? 32'(CORE_ID / `NUM_CORES) : 32'd0);
 
     always @(posedge clk) begin
         if (reset) begin
-            collision_snapshot <= '0;
             collision_cycles <= '0;
-            collision_valid <= 1'b0;
-        end else if (write_enable && write_ready && write_addr == `VX_CSR_DFV_COLL_CTRL) begin
-            case (write_data)
-                `XLEN'(1): begin
-                    collision_snapshot <= dfv_collision;
-                    collision_cycles <= cycles;
-                    collision_valid <= 1'b1;
+            throttle_cycles <= '0;
+            collision_valid <= 0;
+            throttle_valid <= 0;
+            collision_select <= 0;
+            throttle_select <= 0;
+            for (integer i = 0; i < DFV_COLLISION_COUNT; ++i)
+                collision_snapshot[i] <= '0;
+            for (integer i = 0; i < `UP(DFV_THROTTLE_COUNT); ++i)
+                throttle_snapshot[i] <= '0;
+        end else if (write_enable && write_ready) begin
+            case (write_addr)
+                `VX_CSR_DFV_COLL_SELECT: collision_select <= 32'(write_data);
+                `VX_CSR_DFV_THR_SELECT: throttle_select <= 32'(write_data);
+                `VX_CSR_DFV_COLL_CTRL: begin
+                    if (write_data == `XLEN'(1)) begin
+                        collision_cycles <= cycles;
+                        collision_valid <= 1;
+                        for (integer i = 0; i < DFV_COLLISION_COUNT; ++i)
+                            collision_snapshot[i] <= dfv_collision[i];
+                    end else if (write_data == `XLEN'(0)) begin
+                        collision_cycles <= '0;
+                        collision_valid <= 0;
+                        for (integer i = 0; i < DFV_COLLISION_COUNT; ++i)
+                            collision_snapshot[i] <= '0;
+                    end
                 end
-                `XLEN'(0): begin
-                    collision_snapshot <= '0;
-                    collision_cycles <= '0;
-                    collision_valid <= 1'b0;
+                `VX_CSR_DFV_THR_CTRL: begin
+                    if (write_data == `XLEN'(1)) begin
+                        throttle_cycles <= cycles;
+                        throttle_valid <= 1;
+                        for (integer i = 0; i < DFV_THROTTLE_COUNT; ++i)
+                            throttle_snapshot[i] <= dfv_throttle[i];
+                    end else if (write_data == `XLEN'(0)) begin
+                        throttle_cycles <= '0;
+                        throttle_valid <= 0;
+                        for (integer i = 0; i < `UP(DFV_THROTTLE_COUNT); ++i)
+                            throttle_snapshot[i] <= '0;
+                    end
                 end
-                default:; // reserved commands have no effect
+                default:;
             endcase
         end
     end
@@ -352,14 +402,28 @@ import VX_fpu_pkg::*;
         `endif
             `VX_CSR_MSCRATCH   : read_data_rw_w = mscratch;
 
-            // Captured DFV observations are read-only. Reading CTRL is harmless.
-            `VX_CSR_DFV_COLL_CTRL    : read_data_ro_w = '0;
-            `VX_CSR_DFV_COLL_INFO    : read_data_ro_w = `XLEN'(`VX_DFV_COLLISION_ID);
-            `VX_CSR_DFV_COLL_NATURAL : read_data_ro_w = `XLEN'(collision_snapshot.natural_count);
-            `VX_CSR_DFV_COLL_DFV     : read_data_ro_w = `XLEN'(collision_snapshot.dfv_count);
-            `VX_CSR_DFV_COLL_STATUS  : read_data_ro_w = `XLEN'(collision_status);
-            `VX_CSR_DFV_COLL_CYCLE_LO: read_data_ro_w = `XLEN'(32'(collision_cycles));
+            `VX_CSR_DFV_COLL_CTRL: read_data_ro_w = '0;
+            `VX_CSR_DFV_THR_CTRL: read_data_ro_w = '0;
+            `VX_CSR_DFV_COLL_SELECT: read_data_rw_w = `XLEN'(collision_select);
+            `VX_CSR_DFV_THR_SELECT: read_data_rw_w = `XLEN'(throttle_select);
+            `VX_CSR_DFV_COLL_INFO: read_data_ro_w = `XLEN'(`VX_DFV_COLLISION_ID);
+            `VX_CSR_DFV_COLL_NATURAL: read_data_ro_w = `XLEN'(selected_collision.natural_count);
+            `VX_CSR_DFV_COLL_DFV: read_data_ro_w = `XLEN'(selected_collision.dfv_count);
+            `VX_CSR_DFV_COLL_STATUS: read_data_ro_w = `XLEN'(collision_status);
+            `VX_CSR_DFV_COLL_CYCLE_LO: read_data_ro_w = `XLEN'(collision_cycles[31:0]);
             `VX_CSR_DFV_COLL_CYCLE_HI: read_data_ro_w = `XLEN'(collision_cycles[PERF_CTR_BITS-1:32]);
+            `VX_CSR_DFV_COLL_COUNT: read_data_ro_w = `XLEN'(DFV_COLLISION_COUNT);
+            `VX_CSR_DFV_COLL_DESC: read_data_ro_w = collision_index_valid ? `XLEN'(dfv_collision_desc(collision_select)) : '0;
+            `VX_CSR_DFV_COLL_OWNER: read_data_ro_w = collision_index_valid ? `XLEN'(collision_owner) : '0;
+            `VX_CSR_DFV_THR_INFO: read_data_ro_w = `XLEN'(`VX_DFV_THROTTLE_ID);
+            `VX_CSR_DFV_THR_EVENTS: read_data_ro_w = `XLEN'(selected_throttle.event_count);
+            `VX_CSR_DFV_THR_STATUS: read_data_ro_w = `XLEN'(throttle_status);
+            `VX_CSR_DFV_THR_CYCLE_LO: read_data_ro_w = `XLEN'(throttle_cycles[31:0]);
+            `VX_CSR_DFV_THR_CYCLE_HI: read_data_ro_w = `XLEN'(throttle_cycles[PERF_CTR_BITS-1:32]);
+            `VX_CSR_DFV_THR_COUNT: read_data_ro_w = `XLEN'(DFV_THROTTLE_COUNT);
+            `VX_CSR_DFV_THR_DESC: read_data_ro_w = throttle_index_valid ? `XLEN'(dfv_throttle_desc(throttle_select)) : '0;
+            `VX_CSR_DFV_THR_OWNER: read_data_ro_w = throttle_index_valid ? `XLEN'(CORE_ID / `SOCKET_SIZE) : '0;
+            `VX_CSR_DFV_THR_THRESHOLD: read_data_ro_w = `XLEN'(selected_throttle.threshold);
 
             // DFV CSRs
             12'h7C0            : read_data_rw_w = `XLEN'(dfv_ctrl_enable);       // VX_CSR_DFV_CTRL
