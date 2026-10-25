@@ -292,12 +292,13 @@ import VX_fpu_pkg::*;
                 end
                 12'h7CE: begin  // VX_CSR_DFV_BANK_THROTTLE_THRESHOLD
                     dfv_bank_throttle_thresh_r <= write_data[15:0];
-                end
-                `VX_CSR_DFV_COLL_SELECT,
-                `VX_CSR_DFV_THR_CTRL,
-                `VX_CSR_DFV_THR_SELECT: begin
-                    // Observation writes are handled below on acceptance.
-                end
+                end            
+                `VX_CSR_DFV_COLL_CTRL,    // 0x7CF
+                `VX_CSR_DFV_COLL_SELECT,  // 0x7D0
+                `VX_CSR_DFV_THR_CTRL,     // 0x7D1
+                `VX_CSR_DFV_THR_SELECT: begin  // 0x7D2
+                    // Handled by the accepted-write block below.
+                end                
                 default: begin
                     `ASSERT(0, ("%t: *** %s invalid CSR write address: %0h (#%0d)", $time, INSTANCE_ID, write_addr, write_uuid));
                 end
@@ -422,7 +423,7 @@ import VX_fpu_pkg::*;
             `VX_CSR_DFV_THR_CYCLE_HI: read_data_ro_w = `XLEN'(throttle_cycles[PERF_CTR_BITS-1:32]);
             `VX_CSR_DFV_THR_COUNT: read_data_ro_w = `XLEN'(DFV_THROTTLE_COUNT);
             `VX_CSR_DFV_THR_DESC: read_data_ro_w = throttle_index_valid ? `XLEN'(dfv_throttle_desc(throttle_select)) : '0;
-            `VX_CSR_DFV_THR_OWNER: read_data_ro_w = throttle_index_valid ? `XLEN'(CORE_ID / `SOCKET_SIZE) : '0;
+            `VX_CSR_DFV_THR_OWNER: read_data_ro_w = throttle_index_valid ? `XLEN'(32'(CORE_ID / `SOCKET_SIZE)) : '0;
             `VX_CSR_DFV_THR_THRESHOLD: read_data_ro_w = `XLEN'(selected_throttle.threshold);
 
             // DFV CSRs

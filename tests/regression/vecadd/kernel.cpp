@@ -17,7 +17,7 @@ int main() {
     if (arg->enable_dfv_test) {
         csr_write(VX_CSR_DFV_CTRL, 1);
         csr_write(VX_CSR_DFV_RANDOM_SEED, 0xABCDEF00);
-        csr_write(VX_CSR_DFV_SET_THRESHOLD, 240);
+        csr_write(VX_CSR_DFV_SET_THRESHOLD, 61440);
         csr_write(VX_CSR_DFV_RELEASE_THRESHOLD, 61440);  // release when lfsr2[15:0] >= 65504 (~0.04%)
         csr_write(VX_CSR_DFV_RELEASE_DELAY, 4096);
         csr_write(VX_CSR_DFV_RELEASE_FOREVER, 0);
@@ -26,7 +26,7 @@ int main() {
         csr_write(VX_CSR_DFV_FILL_BANK_MASK, 65535);
         csr_write(VX_CSR_DFV_DCACHE_CORE_REQ_STALL, 0);
         csr_write(VX_CSR_DFV_ICACHE_FILL_REQ_STALL, 0);
-        csr_write(VX_CSR_DFV_DCACHE_FILL_REQ_STALL, 0);
+        csr_write(VX_CSR_DFV_DCACHE_FILL_REQ_STALL, 1);
         csr_write(VX_CSR_DFV_WRITEBACK_STALL, 0);
         csr_write(VX_CSR_DFV_DCACHE_FILL_RSP_STALL, 1);
         VX_DFV_ALLOC(&dfv_begin);

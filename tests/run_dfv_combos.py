@@ -39,7 +39,7 @@ STALL_TYPES = [
 # VX_CSR_DFV_WRITEBACK_STALL is excluded from STALL_TYPES and always forced to 0.
 
 # Defaults matching the normalized kernel.cpp baseline
-DEFAULT_SET_THRESHOLD      = 0x00F0
+DEFAULT_SET_THRESHOLD      = 0xF000
 DEFAULT_RELEASE_THRESHOLD  = 0xF000
 DEFAULT_RELEASE_DELAY      = 0x1000
 DEFAULT_RELEASE_FOREVER    = 0
@@ -81,11 +81,11 @@ COMBOS_TYPE1 = [
 # first, so no script-side change was needed beyond this CSR flip.
 COMBOS_TYPE2 = [
     {"stalls": (False, False, False, False), "label": "none",
-    "release_threshold": 0xFFF6, "release_forever": 0, "set_threshold": 0x0010},
+    "release_threshold": 0xFFF6, "release_forever": 0, "set_threshold": 0x1000},
     {"stalls": (True,  False, False, False), "label": "icache_fill_req_backpressure",
-    "release_threshold": 0xFFF6, "release_forever": 0, "set_threshold": 0x0010},
+    "release_threshold": 0xFFF6, "release_forever": 0, "set_threshold": 0x1000},
     {"stalls": (False, False, True,  False), "label": "dcache_fill_rsp_backpressure",
-    "release_threshold": 0xFFF6, "release_forever": 0, "set_threshold": 0x0010},
+    "release_threshold": 0xFFF6, "release_forever": 0, "set_threshold": 0x1000},
 ]
 
 # Type 3: asymmetric slowdown — stall only bank 0, let other banks proceed.

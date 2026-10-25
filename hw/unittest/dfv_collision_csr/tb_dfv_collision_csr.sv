@@ -99,8 +99,8 @@ module tb_dfv_collision_csr import VX_gpu_pkg::*; ();
             // Live changes after capture cannot leak into any selected bank.
             dfv_collision[i].natural_count=32'(40000+i);
             write_csr(`VX_CSR_DFV_COLL_SELECT,`XLEN'(i));
-            check_csr(`VX_CSR_DFV_COLL_NATURAL,`XLEN'(10000+i));
-            check_csr(`VX_CSR_DFV_COLL_DFV,`XLEN'(20000+i));
+            check_csr(`VX_CSR_DFV_COLL_NATURAL, `XLEN'(32'(10000+i)));
+            check_csr(`VX_CSR_DFV_COLL_DFV,     `XLEN'(32'(20000+i)));
             check_csr(`VX_CSR_DFV_COLL_STATUS,`XLEN'(9));
             check_csr(`VX_CSR_DFV_COLL_DESC,`XLEN'(dfv_collision_desc(32'(i))));
             check_csr(`VX_CSR_DFV_COLL_OWNER,`XLEN'((i<DFV_LOCAL_COLL_COUNT)?(`DFV_TEST_CORE_ID/`SOCKET_SIZE):((i<DFV_LOCAL_COLL_COUNT+DFV_L2_COLL_COUNT)?(`DFV_TEST_CORE_ID/`NUM_CORES):0)));
@@ -110,10 +110,10 @@ module tb_dfv_collision_csr import VX_gpu_pkg::*; ();
         for (integer i=0;i<DFV_THROTTLE_COUNT;++i) begin
             dfv_throttle[i].event_count=32'(50000+i);
             write_csr(`VX_CSR_DFV_THR_SELECT,`XLEN'(i));
-            check_csr(`VX_CSR_DFV_THR_EVENTS,`XLEN'(30000+i));
+            check_csr(`VX_CSR_DFV_THR_EVENTS,   `XLEN'(32'(30000+i)));
             check_csr(`VX_CSR_DFV_THR_STATUS,`XLEN'(9));
             check_csr(`VX_CSR_DFV_THR_DESC,`XLEN'(dfv_throttle_desc(32'(i))));
-            check_csr(`VX_CSR_DFV_THR_THRESHOLD,`XLEN'(500+i));
+            check_csr(`VX_CSR_DFV_THR_THRESHOLD,`XLEN'(16'(500+i)));
             check_csr(`VX_CSR_DFV_THR_OWNER,`XLEN'(`DFV_TEST_CORE_ID/`SOCKET_SIZE));
             check_csr(`VX_CSR_DFV_THR_CYCLE_LO,`XLEN'(32'h87654321));
             check_csr(`VX_CSR_DFV_THR_CYCLE_HI,`XLEN'(12'hdef));
