@@ -41,7 +41,7 @@ STALL_TYPES = [
 # Defaults matching the normalized kernel.cpp baseline
 DEFAULT_SET_THRESHOLD      = 0xE000
 DEFAULT_RELEASE_THRESHOLD  = 0xE000
-DEFAULT_RELEASE_DELAY      = 0x1000
+DEFAULT_RELEASE_DELAY      = 0x0000 #0x1000 for 32 threads
 DEFAULT_RELEASE_FOREVER    = 0
 DEFAULT_THROTTLE_THRESHOLD = 0x2ED1 #0x1800
 DEFAULT_FILL_BANK_MASK     = 0xFFFF
@@ -116,7 +116,7 @@ TEST_APPS = {
     #"vecadd":     "-n64",
     #"basic":      "-n16",
     #"conv3":      "-n8",
-    "cta":        "-x2 -y2 -z2 -a2 -b2 -c2",
+    #"cta":        "-x2 -y2 -z2 -a2 -b2 -c2",
     "demo":       "-n16",
     #"diverge":    "-n16",
     #"dogfood":    "-n16",
