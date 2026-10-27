@@ -1,0 +1,24 @@
+/dts-v1/;
+/plugin/;
+&fpga_full {
+    firmware-name = "kv260-vortex.bit.bin";
+    resets = <&zynqmp_reset 116>;
+};
+&amba {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    vortex-afi {
+        compatible = "xlnx,afi-fpga";
+        config-afi = <14 0x200>;
+    };
+    vortex-clock {
+        compatible = "xlnx,fclk";
+        clocks = <&zynqmp_clk 71>;
+        assigned-clocks = <&zynqmp_clk 71>;
+        assigned-clock-rates = <100000000>;
+    };
+    vortex@a0000000 {
+        compatible = "research,kv260-vortex-bram";
+        reg = <0x0 0xa0000000 0x0 0x80000>;
+    };
+};

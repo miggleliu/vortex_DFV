@@ -1,0 +1,4 @@
+all:
+{
+    kv260-vortex.bit
+}

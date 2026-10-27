@@ -1,0 +1,17 @@
+{
+  "upstream_commit": "1a2cde44fe8567dbac360861db7c3d311d572985",
+  "part": "xck26-sfvc784-2LV-c",
+  "clock_hz": 100000000,
+  "defines": ["XLEN_32", "NUM_CLUSTERS=1", "NUM_CORES=1", "NUM_WARPS=4", "NUM_THREADS=4", "EXT_F_DISABLE", "ICACHE_SIZE=4096", "DCACHE_SIZE=4096", "DCACHE_NUM_BANKS=4", "PLATFORM_MEMORY_NUM_BANKS=1"],
+  "register_base": 2684354560,
+  "aperture_bytes": 524288,
+  "ram_window": 262144,
+  "ram_bytes": 262144,
+  "code_base": 2147483648,
+  "code_limit": 2147549184,
+  "heap_base": 65536,
+  "heap_limit": 131072,
+  "stack_base": 4294901760,
+  "stack_limit_low": 4294770688,
+  "stack_log2_size": 13
+}
