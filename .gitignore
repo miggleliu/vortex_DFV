@@ -14,3 +14,10 @@ miscs/apptainer/vortex.sif
 *vcd
 *.RR
 *_example.sv
+
+# Editor swap and backup files
+*.swp
+*.swo
+*.swn
+*.backup
+*~
