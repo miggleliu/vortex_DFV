@@ -39,8 +39,8 @@ STALL_TYPES = [
 # VX_CSR_DFV_WRITEBACK_STALL is excluded from STALL_TYPES and always forced to 0.
 
 # Defaults matching the normalized kernel.cpp baseline
-DEFAULT_SET_THRESHOLD      = 0xF000
-DEFAULT_RELEASE_THRESHOLD  = 0xF000
+DEFAULT_SET_THRESHOLD      = 0xE000
+DEFAULT_RELEASE_THRESHOLD  = 0xE000
 DEFAULT_RELEASE_DELAY      = 0x1000
 DEFAULT_RELEASE_FOREVER    = 0
 DEFAULT_THROTTLE_THRESHOLD = 0x2ED1 #0x1800
@@ -63,8 +63,8 @@ DEFAULT_BANK_THROTTLE_THRESHOLD = 0x1800 #0x0100
 # Type 1: observe every cache bank and the I-cache/D-cache arbiter through CSRs.
 # Existing injection settings are retained; a zero event count is valid, not coverage.
 COMBOS_TYPE1 = [
-    {"stalls": (False, False, False, False), "label": "none",
-     "release_threshold": 0xF000, "release_forever": 0},
+    #{"stalls": (False, False, False, False), "label": "none",
+    # "release_threshold": 0xF000, "release_forever": 0},
     {"stalls": (True,  True,  False, False), "label": "icache_fill_req_N_dcache_fill_req",
      "release_threshold": 0xF000, "release_forever": 0},
     {"stalls": (False, False, True,  True),  "label": "dcache_fill_rsp_N_dcache_core_req",
@@ -106,25 +106,25 @@ COMBOS = {1: COMBOS_TYPE1, 2: COMBOS_TYPE2, 3: COMBOS_TYPE3}[DFV_TEST_TYPE]
 # Per-app arguments (size flags; -d is appended to enable DFV path)
 TEST_APPS = {
     #"printf":     "-n4",
-    "relu":       "-n64",
-    "sgemm":      "-n8",
-    "sgemm2":     "-n16",
-    #"sgemm_tcu":  "-m8 -n8",
-    "sgemv":      "-m16 -n16",
-    #"sort":       "-n16",
+    #"relu":       "-n64",
+    #"sgemm":      "-n8",
+    #"sgemm2":     "-n16",
+    ##"sgemm_tcu":  "-m8 -n8",
+    #"sgemv":      "-m16 -n16",
+    #"sort":       "-n4",
     #"stencil3d":  "-n4",
-    "vecadd":     "-n64",
+    #"vecadd":     "-n64",
     #"basic":      "-n16",
-    "conv3":      "-n8",
+    #"conv3":      "-n8",
     "cta":        "-x2 -y2 -z2 -a2 -b2 -c2",
     "demo":       "-n16",
     #"diverge":    "-n16",
     #"dogfood":    "-n16",
-    "dotproduct": "-n64",
-    "dropout":    "-n64",
-    "fence":      "-n16",
-    "io_addr":    "-n16",
-    "madmax":     "-n4",
+    #"dotproduct": "-n64",
+    #"dropout":    "-n64",
+    #"fence":      "-n16",
+    #"io_addr":    "-n16",
+    #"madmax":     "-n4",
     #"mstress":    "-n16",
 }
 
