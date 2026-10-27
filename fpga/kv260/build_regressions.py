@@ -15,11 +15,102 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 
 PORT=Path(__file__).resolve().parent
 ROOT=PORT.parents[1]
 sys.path.insert(0,str(ROOT/'tests'))
 import run_dfv_combos as combos
+
+# Contract of the already-built FPGA image. Git history is provenance, not ABI.
+PROFILE_DEFINES = ['XLEN_32','NUM_CLUSTERS=1','NUM_CORES=1','NUM_WARPS=4',
+    'NUM_THREADS=4','EXT_F_DISABLE','ICACHE_SIZE=4096','DCACHE_SIZE=4096',
+    'DCACHE_NUM_BANKS=4','PLATFORM_MEMORY_NUM_BANKS=1']
+BOARD_ABI = {
+    'XLEN':32,'NUM_CLUSTERS':1,'NUM_CORES':1,'NUM_WARPS':4,'NUM_THREADS':4,
+    'ICACHE_SIZE':4096,'DCACHE_SIZE':4096,'DCACHE_NUM_BANKS':4,
+    'PLATFORM_MEMORY_NUM_BANKS':1,'STACK_BASE_ADDR':0xffff0000,
+    'STACK_LOG2_SIZE':13,'STARTUP_ADDR':0x80000000,'USER_BASE_ADDR':0x10000,
+    'IO_BASE_ADDR':0x40,'IO_COUT_ADDR':0x40,'IO_COUT_SIZE':64,'IO_MPM_ADDR':0x80,
+    'LMEM_BASE_ADDR':0xffff0000,'LMEM_LOG_SIZE':14,
+    'VX_DCR_BASE_STARTUP_ADDR0':1,'VX_DCR_BASE_STARTUP_ADDR1':2,
+    'VX_DCR_BASE_STARTUP_ARG0':3,'VX_DCR_BASE_STARTUP_ARG1':4,'VX_DCR_BASE_MPM_CLASS':5,
+    'VX_CSR_MSCRATCH':0x340,'VX_CSR_MPM_BASE':0xb00,'VX_CSR_MPM_BASE_H':0xb80,
+    'VX_CSR_NUM_THREADS':0xfc0,'VX_CSR_NUM_WARPS':0xfc1,'VX_CSR_NUM_CORES':0xfc2,
+    'VX_CSR_DFV_COLL_CTRL':0x7cf,'VX_CSR_DFV_COLL_SELECT':0x7d0,
+    'VX_CSR_DFV_THR_CTRL':0x7d1,'VX_CSR_DFV_THR_SELECT':0x7d2,
+    'VX_DFV_COLLISION_ID':0x434f4c33,'VX_DFV_THROTTLE_ID':0x54485231,
+    'VX_DFV_COLLISION_WIDTH':32,
+}
+for _name,_address in [('INFO',0xcc8),('NATURAL',0xcc9),('DFV',0xcca),
+    ('STATUS',0xccb),('CYCLE_LO',0xccc),('CYCLE_HI',0xccd),('COUNT',0xcce),
+    ('DESC',0xccf),('OWNER',0xcd0)]:
+    BOARD_ABI['VX_CSR_DFV_COLL_'+_name]=_address
+for _name,_address in [('INFO',0xcd8),('EVENTS',0xcd9),('STATUS',0xcda),
+    ('CYCLE_LO',0xcdb),('CYCLE_HI',0xcdc),('COUNT',0xcdd),('DESC',0xcde),
+    ('OWNER',0xcdf),('THRESHOLD',0xce0)]:
+    BOARD_ABI['VX_CSR_DFV_THR_'+_name]=_address
+APP_ABI = {
+    'VX_CSR_DFV_CTRL':0x7c0,'VX_CSR_DFV_ICACHE_FILL_REQ_STALL':0x7c1,
+    'VX_CSR_DFV_RANDOM_SEED':0x7c2,'VX_CSR_DFV_SET_THRESHOLD':0x7c3,
+    'VX_CSR_DFV_DCACHE_FILL_REQ_STALL':0x7c4,'VX_CSR_DFV_WRITEBACK_STALL':0x7c5,
+    'VX_CSR_DFV_DCACHE_FILL_RSP_STALL':0x7c6,'VX_CSR_DFV_RELEASE_THRESHOLD':0x7c7,
+    'VX_CSR_DFV_RELEASE_SEED':0x7c8,'VX_CSR_DFV_RELEASE_DELAY':0x7c9,
+    'VX_CSR_DFV_RELEASE_FOREVER':0x7ca,'VX_CSR_DFV_THROTTLE_THRESHOLD':0x7cb,
+    'VX_CSR_DFV_FILL_BANK_MASK':0x7cc,'VX_CSR_DFV_DCACHE_CORE_REQ_STALL':0x7cd,
+    'VX_CSR_DFV_BANK_THROTTLE_THRESHOLD':0x7ce,
+}
+
+def check_compatibility(root, cfg, apps, native_cxx='g++'):
+    """Evaluate current working-tree headers with the actual FPGA build defines.
+
+    This checks address/CSR/configuration compatibility, not equivalence of new
+    RTL to the old bitstream. New RTL behavior still requires a hardware rebuild.
+    """
+    if sorted(cfg['defines']) != sorted(PROFILE_DEFINES):
+        raise ValueError('FPGA profile defines differ from the implemented image')
+    if not shutil.which(native_cxx):
+        raise ValueError(f'Native compiler missing: {native_cxx}; use --native-cxx /usr/bin/g++-11')
+    report={'checked_apps':{},'scope':'memory map, CSR addresses/IDs and FPGA profile; not RTL behavioral equivalence'}
+    with tempfile.TemporaryDirectory(prefix='kv260-abi-') as td:
+        work=Path(td)
+        for name in ['VX_config','VX_types']:
+            subprocess.run([sys.executable,str(root/'hw/scripts/gen_config.py'),'-i',
+                str(root/'hw/rtl'/f'{name}.vh'),'-o',str(work/f'{name}.h')],check=True,capture_output=True,text=True)
+        for app in apps:
+            expected={**BOARD_ABI,**APP_ABI}
+            source=['#include <cstdint>','#include <cstdio>','#include <VX_config.h>',
+                    '#include <VX_types.h>','#include "common.h"',
+                    '#if defined(EXT_F_ENABLE) || defined(EXT_D_ENABLE) || defined(L2_ENABLE) || defined(L3_ENABLE) || defined(VM_ENABLE)',
+                    '#error Current software enables a hardware feature absent from this FPGA profile',
+                    '#endif','int main() {']
+            source += [f'  std::printf("{name}=%llx\\n", (unsigned long long)({name}));' for name in expected]
+            source += ['}']
+            cpp=work/'probe.cpp';cpp.write_text('\n'.join(source)+'\n')
+            exe=work/'probe'
+            command=[native_cxx,'-std=c++17',*['-D'+d for d in cfg['defines']],'-DTYPE=int',
+                     '-I'+str(work),'-I'+str(root/'tests/regression'/app),str(cpp),'-o',str(exe)]
+            compiled=subprocess.run(command,capture_output=True,text=True)
+            if compiled.returncode:
+                raise ValueError(f'{app}: cannot compile FPGA interface probe:\n{compiled.stderr}')
+            values=dict(line.split('=',1) for line in subprocess.check_output([str(exe)],text=True).splitlines())
+            actual={name:int(value,16) for name,value in values.items()}
+            mismatch=[f'{name}: expected {value:#x}, got {actual[name]:#x}'
+                      for name,value in expected.items() if actual.get(name)!=value]
+            if mismatch:
+                raise ValueError(app+': FPGA interface mismatch:\n'+'\n'.join(mismatch))
+            report['checked_apps'][app]=actual
+    return report
+
+def source_provenance(root, cfg):
+    revision=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+    dirty=subprocess.check_output(['git','-C',str(root),'status','--porcelain','--',
+        'hw','kernel','runtime','sim/common','tests'],text=True).splitlines()
+    delta=subprocess.run(['git','-C',str(root),'diff','--name-only',cfg['upstream_commit'],
+                         '--','hw/rtl'],capture_output=True,text=True)
+    return {'software_commit':revision,'hardware_commit':cfg['upstream_commit'],
+            'working_tree_changes':dirty,
+            'rtl_changed_from_image':delta.stdout.splitlines() if not delta.returncode else None}
 
 def check_image(image, elf, objdump, nm):
     data=image.read_bytes()
@@ -49,16 +140,29 @@ def check_image(image, elf, objdump, nm):
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--build',required=True,type=Path,help='Configured RV32 Vortex build directory')
-    ap.add_argument('--out',required=True,type=Path,help='New bundle directory')
+    ap.add_argument('--build',type=Path,help='Configured RV32 Vortex build directory')
+    ap.add_argument('--out',type=Path,help='New bundle directory')
     ap.add_argument('--apps',nargs='+',choices=['demo','vecadd'],default=['demo'])
     ap.add_argument('--type',type=int,choices=[1,2,3],default=1)
     ap.add_argument('--host-cxx',default='aarch64-linux-gnu-g++')
+    ap.add_argument('--native-cxx',default='g++',help='Native compiler for interface preflight')
+    ap.add_argument('--check-only',action='store_true',help='Check interface compatibility without the RV32 SDK or building outputs')
     a=ap.parse_args()
-    build,out=a.build.resolve(),a.out.resolve()
     cfg=json.loads((PORT/'config.json').read_text())
-    revision=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
-    if revision!=cfg['upstream_commit']: ap.error('Unreviewed upstream revision')
+    provenance=source_provenance(ROOT,cfg)
+    revision=provenance['software_commit']
+    try:
+        compatibility=check_compatibility(ROOT,cfg,a.apps,a.native_cxx)
+    except (ValueError,subprocess.CalledProcessError) as exc:
+        ap.error(str(exc))
+    print(f'Hardware image commit: {cfg["upstream_commit"]}',flush=True)
+    print(f'Software checkout:     {revision}',flush=True)
+    print('PASS: FPGA interface/profile checks for '+', '.join(a.apps),flush=True)
+    if provenance['rtl_changed_from_image']:
+        print('RTL changes are recorded in provenance; the loaded image retains its built RTL behavior.',flush=True)
+    if a.check_only: return 0
+    if not a.build or not a.out: ap.error('--build and --out are required for compilation')
+    build,out=a.build.resolve(),a.out.resolve()
     if not (build/'config.mk').is_file(): ap.error('--build needs an existing configured RV32 build')
     if out.exists(): ap.error('--out must be new')
     if not shutil.which(a.host_cxx): ap.error(f'Host cross compiler missing: {a.host_cxx}')
@@ -86,7 +190,8 @@ def main():
     cflags=['-march=rv32imaf','-mabi=ilp32f','-O3','-mcmodel=medany','-fno-exceptions','-fdata-sections','-ffunction-sections',
             '-I'+str(ROOT/'kernel/include'),'-I'+str(out/'hw'),*defs]
     subprocess.run(['make','-f',str(ROOT/'kernel/Makefile'),f'ROOT_DIR={out}',f'CFLAGS={shlex.join(cflags)}','libvortex.a'],cwd=kn,check=True)
-    result={'upstream_commit':revision,'profile':cfg,'type':a.type,'cases':[]}
+    result={'upstream_commit':revision,**provenance,'compatibility':compatibility,
+            'profile':cfg,'type':a.type,'cases':[]}
     source_hashes={}
     choices={1:combos.COMBOS_TYPE1,2:combos.COMBOS_TYPE2,3:combos.COMBOS_TYPE3}[a.type]
     for app in a.apps:
