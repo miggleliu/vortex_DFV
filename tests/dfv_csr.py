@@ -5,7 +5,7 @@ Only GPU-printed raw frames/samples supply data. RTL displays are never parsed.
 Each core captures all slots of a family simultaneously. Shared observations
 are kept separate by reader core; no cross-core totals are formed.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 FRAME_MARKER = 'DFV_CSR_FRAME'
@@ -34,6 +34,8 @@ class ObservationWindow:
     count1: int
     cycles: int
     threshold: int
+    launch: int = 0
+    launches: int = 1
 
     @property
     def domain(self):
@@ -51,6 +53,8 @@ class ObservationWindow:
     @property
     def prefix(self):
         base = f'core{self.core}_{self.family}_{self.domain}_owner{self.owner}_unit{self.unit}'
+        if self.launches > 1:
+            base = f'launch{self.launch}_' + base
         return base if self.domain == 'global' else base + f'_bank{self.bank}'
 
     @property
@@ -66,7 +70,8 @@ class ObservationWindow:
         return self.count0 + self.count1
 
     def as_dict(self):
-        result = dict(core=self.core, cores=self.cores, family=self.family,
+        result = dict(launch=self.launch, launches=self.launches,
+                      core=self.core, cores=self.cores, family=self.family,
                       index=self.index, domain=self.domain, unit=self.unit,
                       bank=None if self.domain == 'global' else self.bank,
                       owner=self.owner, window_cycles=self.cycles)
@@ -102,6 +107,30 @@ def _fields(line, marker, expected, number):
 
 
 def parse_observation_windows(lines):
+    """Decode sequential kernel launches without merging counters across resets.
+
+    The v2 wire format has no launch ID. A repeated BEGIN key starts the next
+    launch only after the preceding launch passes all frame/sample checks.
+    Duplicate END frames, repeated samples and partial launches remain errors.
+    """
+    launches, batch, begun = [], [], set()
+    for number, line in enumerate(lines, 1):
+        if FRAME_MARKER in line:
+            frame = _fields(line, FRAME_MARKER, FRAME_FIELDS, number)
+            if frame['phase'] == 'BEGIN':
+                key = frame['core'], frame['family']
+                if key in begun:
+                    launches.append(_parse_launch(batch))
+                    batch, begun = [], set()
+                begun.add(key)
+        batch.append(line)
+    launches.append(_parse_launch(batch))
+    count = len(launches)
+    return [replace(window, launch=index, launches=count)
+            for index, windows in enumerate(launches) for window in windows]
+
+
+def _parse_launch(lines):
     frames, samples = {}, {}
     expected_cores = None
     for number, line in enumerate(lines, 1):

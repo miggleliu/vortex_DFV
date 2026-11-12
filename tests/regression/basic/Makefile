@@ -7,7 +7,9 @@ SRC_DIR := $(VORTEX_HOME)/tests/regression/$(PROJECT)
 
 SRCS := $(SRC_DIR)/main.cpp
 
-VX_SRCS := $(SRC_DIR)/kernel.cpp $(VORTEX_HOME)/kernel/src/vx_perf.c $(SRC_DIR)/start.S
+# CSR snapshots/printing require the normal runtime's stack, GP and TLS setup.
+# common.mk links libvortex.a, which supplies vx_start.S and vx_perf_dump.
+VX_SRCS := $(SRC_DIR)/kernel.cpp
 
 OPTS ?= -n256
 
