@@ -18,6 +18,19 @@ import subprocess
 from dfv_csr import (CollisionReportError, FRAME_MARKER, SAMPLE_MARKER,
                      parse_observation_windows)
 
+DEFAULT_CONFIGS = " ".join([
+    "-DNUM_CLUSTERS=1",
+    "-DNUM_CORES=1",
+    "-DNUM_WARPS=4",
+    "-DNUM_THREADS=4",
+    "-DICACHE_SIZE=4096",
+    "-DDCACHE_SIZE=4096",
+    "-DDCACHE_NUM_BANKS=4",
+    "-DPLATFORM_MEMORY_NUM_BANKS=1",
+    #"-DEXT_F_DISABLE" # for the FPGA-matched integer profile.
+])
+
+os.environ.setdefault("CONFIGS", DEFAULT_CONFIGS)
 VORTEX_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 REG_DIR = os.path.join(VORTEX_ROOT, "tests", "regression")
 BUILD_DIR = os.path.join(VORTEX_ROOT, "build")
@@ -63,8 +76,8 @@ DEFAULT_BANK_THROTTLE_THRESHOLD = 0x1800 #0x0100
 # Type 1: observe every cache bank and the I-cache/D-cache arbiter through CSRs.
 # Existing injection settings are retained; a zero event count is valid, not coverage.
 COMBOS_TYPE1 = [
-    #{"stalls": (False, False, False, False), "label": "none",
-    # "release_threshold": 0xF000, "release_forever": 0},
+    {"stalls": (False, False, False, False), "label": "none",
+     "release_threshold": 0xF000, "release_forever": 0},
     {"stalls": (True,  True,  False, False), "label": "icache_fill_req_N_dcache_fill_req",
      "release_threshold": 0xF000, "release_forever": 0},
     {"stalls": (False, False, True,  True),  "label": "dcache_fill_rsp_N_dcache_core_req",
@@ -105,27 +118,27 @@ COMBOS = {1: COMBOS_TYPE1, 2: COMBOS_TYPE2, 3: COMBOS_TYPE3}[DFV_TEST_TYPE]
 
 # Per-app arguments (size flags; -d is appended to enable DFV path)
 TEST_APPS = {
-    #"printf":     "-n4",
-    #"relu":       "-n64",
-    #"sgemm":      "-n8",
-    #"sgemm2":     "-n16",
-    ##"sgemm_tcu":  "-m8 -n8",
-    #"sgemv":      "-m16 -n16",
-    #"sort":       "-n4",
-    #"stencil3d":  "-n4",
-    #"vecadd":     "-n64",
-    #"basic":      "-n16",
-    #"conv3":      "-n8",
-    #"cta":        "-x2 -y2 -z2 -a2 -b2 -c2",
+    "printf":     "-n4",
+    "relu":       "-n64",
+    "sgemm":      "-n8",
+    "sgemm2":     "-n16",
+    #"sgemm_tcu":  "-m8 -n8",
+    "sgemv":      "-m16 -n16",
+    "sort":       "-n16",
+    "stencil3d":  "-n4",
+    "vecadd":     "-n64",
+    "basic":      "-n16",
+    "conv3":      "-n8",
+    "cta":        "-x2 -y2 -z2 -a2 -b2 -c2",
     "demo":       "-n16",
-    #"diverge":    "-n16",
-    #"dogfood":    "-n16",
-    #"dotproduct": "-n64",
-    #"dropout":    "-n64",
-    #"fence":      "-n16",
-    #"io_addr":    "-n16",
-    #"madmax":     "-n4",
-    #"mstress":    "-n16",
+    "diverge":    "-n16",
+    "dogfood":    "-n16",
+    "dotproduct": "-n64",
+    "dropout":    "-n64",
+    "fence":      "-n16",
+    "io_addr":    "-n16",
+    "madmax":     "-n4",
+    "mstress":    "-n16",
 }
 
 
