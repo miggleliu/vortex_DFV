@@ -250,7 +250,7 @@ def main():
     result['runtime_sha256']={path.name:hashlib.sha256(path.read_bytes()).hexdigest()
                              for path in runtime.glob('*.so')}
     (out/'bundle.json').write_text(json.dumps(result,indent=2)+'\n')
-    for name in ['run_board.py','README.md']:
+    for name in ['run_board.py','dfv_report.py','README.md']:
         shutil.copyfile(PORT/name,out/name)
     (out/'tests').mkdir()
     for name in ['dfv_csr.py','run_dfv_combos.py','dfv_host.py']:

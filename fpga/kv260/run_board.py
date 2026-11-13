@@ -13,6 +13,7 @@ import sys
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE/'tests'))
 from dfv_csr import CollisionReportError, parse_observation_windows
+from dfv_report import write_report
 from run_dfv_combos import extract_perf, window_metrics, target_coverage, selected_windows
 import dfv_host
 
@@ -109,6 +110,8 @@ def main():
     with (a.out/'dfv_perf.csv').open('w',newline='') as f:
         writer=csv.DictWriter(f,fieldnames=fields);writer.writeheader();writer.writerows(rows)
     (a.out/'provenance.json').write_text(json.dumps(cfg,indent=2)+'\n')
+    report = write_report(rows, a.out/'dfv_perf.xlsx')
+    print(f'Excel report: {report}', flush=True)
     print('PASS validates host result comparison and CSR reports; coverage reports target events.')
     return int(failed)
 
