@@ -2,7 +2,7 @@ module tb_backend;
     import VX_gpu_pkg::*;
     logic clk=0; always #5 clk=!clk;
     logic gpu_reset=1,io_clear=1,host_en=0,host_write=0;
-    logic [17:0] host_addr=0;
+    logic [18:0] host_addr=0;
     logic [31:0] host_wdata=0;
     logic [3:0] host_wstrb=0;
     wire [31:0] host_rdata;
@@ -21,12 +21,16 @@ module tb_backend;
     wire [31:0] console_data,console_count;
     logic [5:0] perf_addr=0;
     wire [31:0] perf_rdata;
+    logic perf_clear=1, perf_host_write=0;
+    logic [5:0] perf_host_addr=0;
+    logic [31:0] perf_host_data=0;
+    logic [3:0] perf_host_strb=15;
     kv260_native_bram dut(.*);
     task automatic tick; @(posedge clk); @(negedge clk); endtask
-    task automatic host_put(input [17:0] a,input [31:0] v);
+    task automatic host_put(input [18:0] a,input [31:0] v);
         host_en=1;host_write=1;host_addr=a;host_wdata=v;host_wstrb=15;tick();host_en=0;host_write=0;
     endtask
-    task automatic host_check(input [17:0] a,input [31:0] v);
+    task automatic host_check(input [18:0] a,input [31:0] v);
         host_en=1;host_write=0;host_addr=a;tick();host_en=0;
         if(host_rdata!==v) $fatal(1,"host RAM mismatch addr=%h got=%h expected=%h",a,host_rdata,v);
     endtask
@@ -49,17 +53,21 @@ module tb_backend;
     endtask
     logic [511:0] data;
     initial begin
-        tick();tick();io_clear=0;gpu_reset=0;tick();
-        host_put(18'h0,32'h11111111);
-        host_put(18'h10000,32'h22222222);
-        host_put(18'h20000,32'h33333333);
-        host_put(18'h3ffc0,32'h44444444);
+        tick();tick();io_clear=0;gpu_reset=0;perf_clear=0;tick();
+        host_put(19'h0,32'h11111111);
+        host_put(19'h20000,32'h22222222);
+        host_put(19'h40000,32'h33333333);
+        host_put(19'h5ffc0,32'h44444444);
+        host_put(19'h1ffc0,32'habcdef01);
+        host_put(19'h3ffc0,32'habcdef02);
+        get(32'h8001ffc0,32'habcdef01);
+        get(32'h0002ffc0,32'habcdef02);
         get(32'h80000000,32'h11111111);
         get(32'h00010000,32'h22222222);
         get(32'hfffd0000,32'h33333333);
         get(32'hfffeffc0,32'h44444444);
         send(32'h10000,1,512'(32'haabbccdd),64'h5);
-        host_check(18'h10000,32'h22bb22dd);
+        host_check(19'h20000,32'h22bb22dd);
         send(32'h90000000,1,0,0,1);
         get(0,0);
         $display("PASS: code/heap/stack translation, byte masks, fence and address faults");
@@ -85,8 +93,12 @@ module tb_backend;
         gpu_reset=1;tick();
         perf_addr=0;tick();if(perf_rdata!=32'h11223344 || console_count!=4032) $fatal(1,"completion reset erased IO results");
         io_clear=1;tick();io_clear=0;tick();
-        if(perf_rdata!=0 || console_count!=0) $fatal(1,"new launch did not clear IO");
-        $display("PASS: MPM line decoding, completion retention and new-run clearing");
+        if(perf_rdata!=32'h11223344 || console_count!=0) $fatal(1,"launch did not preserve preloaded IO");
+        perf_host_addr=0;perf_host_data=32'ha1b2c3d4;perf_host_write=1;tick();perf_host_write=0;
+        gpu_reset=0;get(32'h80,32'ha1b2c3d4);
+        perf_clear=1;tick();perf_clear=0;
+        if(perf_rdata!=0) $fatal(1,"full reset did not clear perf registers");
+        $display("PASS: MPM line decoding, completion retention and host preload/launch retention and full-reset clearing");
         $finish;
     end
     initial begin #2000000;$fatal(1,"backend test timed out");end

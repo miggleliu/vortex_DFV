@@ -14,22 +14,46 @@ HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE/'tests'))
 from dfv_csr import CollisionReportError, parse_observation_windows
 from run_dfv_combos import extract_perf, window_metrics, target_coverage, selected_windows
+import dfv_host
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--bundle',type=Path,default=HERE)
     ap.add_argument('--apps',nargs='+')
+    ap.add_argument('--type','--types',dest='types',type=int,nargs='+',choices=[1,2,3])
+    ap.add_argument('--combo',nargs='+',help='Select built scenario labels, for example none')
+    ap.add_argument('--csr',action='append',default=[],help='Runtime NAME=VALUE or ADDRESS=VALUE; repeatable')
+    ap.add_argument('--dfv-config',help='Runtime CSR overrides as a JSON object')
+    ap.add_argument('--list',action='store_true',help='List cases without opening the FPGA')
     ap.add_argument('--out',type=Path,default=Path('board-results'))
     a=ap.parse_args()
     bundle=a.bundle.resolve()
     cfg=json.loads((bundle/'bundle.json').read_text())
-    if platform.machine() not in ['aarch64','arm64'] or os.geteuid()!=0:
+    if cfg.get('format_version')!=2:
+        ap.error('Rebuild a version-2 runtime-configurable bundle')
+    try:
+        overrides=dfv_host.overrides(a.csr,a.dfv_config)
+    except (ValueError,OSError) as exc:
+        ap.error(str(exc))
+    if not a.list and (platform.machine() not in ['aarch64','arm64'] or os.geteuid()!=0):
         ap.error('Run on KV260 Ubuntu using sudo; this is an ARM hardware runner')
-    if a.out.exists(): ap.error('--out must be a new directory')
-    cases=[c for c in cfg['cases'] if not a.apps or c['app'] in a.apps]
+    if not a.list and a.out.exists(): ap.error('--out must be a new directory')
+    cases=[c for c in cfg['cases'] if (not a.apps or c['app'] in a.apps)
+           and (not a.types or c['type'] in a.types)
+           and (not a.combo or c['combo'] in a.combo)]
     if not cases: ap.error('No matching built cases')
     if a.apps and set(a.apps)-{c['app'] for c in cases}: ap.error('Requested app is not in this bundle')
+    for case in cases:
+        case['effective_host_csrs']={hex(k):v for k,v in dfv_host.validate({
+            **{int(k,0):v for k,v in case['host_csrs'].items()},**overrides}).items()}
+    if a.list:
+        for case in cases:
+            print(f'{case["app"]}/type{case["type"]}/{case["combo"]} {case["effective_host_csrs"]}')
+        return 0
     # Check every selected image before starting hardware.
+    for name,expected in cfg['runtime_sha256'].items():
+        if hashlib.sha256((bundle/'runtime'/name).read_bytes()).hexdigest()!=expected:
+            ap.error('Runtime hash mismatch: '+name)
     for c in cases:
         image=bundle/c['directory']/'kernel.vxbin'
         if hashlib.sha256(image.read_bytes()).hexdigest()!=c['sha256']:
@@ -45,30 +69,37 @@ def main():
     failed=False
     for c in cases:
         directory=bundle/c['directory']
-        path=a.out/f'{c["app"]}__{c["combo"]}.log'
-        print(f'Running {c["app"]}/{c["combo"]} on KV260',flush=True)
+        path=a.out/f'{c["app"]}__type{c["type"]}__{c["combo"]}.log'
+        env['VORTEX_DFV_CSRS']=dfv_host.environment({int(k,0):v for k,v in c['effective_host_csrs'].items()})
+        print(f'Running {c["app"]}/type{c["type"]}/{c["combo"]} on KV260',flush=True)
         with path.open('w') as log:
             rc=subprocess.run([str(directory/c['app']),*c['args']],cwd=directory,env=env,
                               stdout=log,stderr=subprocess.STDOUT).returncode
         lines=path.read_text(errors='replace').splitlines()
-        row={'app':c['app'],'combo':c['combo'],'returncode':rc,'upstream_commit':cfg['upstream_commit'],
+        row={'app':c['app'],'type':c['type'],'combo':c['combo'],'returncode':rc,'upstream_commit':cfg['upstream_commit'],
              'dtype':c['dtype'],'status':'PASS' if rc==0 else f'FAIL(rc={rc})'}
         row['instrs'],row['cycles'],row['IPC']=extract_perf(lines)
         try:
             observations=parse_observation_windows(lines)
-            row['coverage']=target_coverage(observations,cfg['type'],c['combo'])
-            metrics,intervals,thresholds=window_metrics(observations,cfg['type'])
+            row['coverage']=target_coverage(observations,c['type'],c['combo'])
+            metrics,intervals,thresholds=window_metrics(observations,c['type'])
             row.update(metrics)
             row.update({k+'_window_cycles':v for k,v in intervals.items()})
             row.update({k+'_threshold':v for k,v in thresholds.items()})
-            (path.with_suffix('.csr.json')).write_text(json.dumps([w.as_dict() for w in observations],indent=2)+'\n')
-            for w in selected_windows(observations,cfg['type']):
-                value=f'natural={w.natural} dfv={w.dfv} total={w.total}' if cfg['type']==1 else f'events={w.count0} threshold={w.threshold}'
+            (path.with_suffix('.csr.json')).write_text(json.dumps({
+                'requested_csrs':c['effective_host_csrs'],
+                'applied_csr_records':[line for line in lines if 'DFV_HOST_CSR' in line],
+                'observations':[w.as_dict() for w in observations]},indent=2)+'\n')
+            for w in selected_windows(observations,c['type']):
+                value=f'natural={w.natural} dfv={w.dfv} total={w.total}' if c['type']==1 else f'events={w.count0} threshold={w.threshold}'
                 print(f'  {w.prefix}: {value}, window_cycles={w.cycles}')
         except CollisionReportError as exc:
             row.update(status='CSR_ERROR' if rc==0 else row['status'],csr_error=str(exc),coverage='unavailable')
         if row['instrs']<0 or row['cycles']<=0:
             row['status']='PERF_ERROR' if row['status']=='PASS' else row['status']
+        if any('SIGMISMATCH:' in line or line.lower().startswith('error at result') for line in lines):
+            row['status']='SIGMISMATCH'
+        row['host_csrs']=json.dumps(c['effective_host_csrs'],sort_keys=True)
         print(f'  {row["status"]} coverage={row["coverage"]}; full log: {path}',flush=True)
         rows.append(row)
         failed |= row['status']!='PASS'

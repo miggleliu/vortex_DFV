@@ -15,9 +15,9 @@
 #include <unistd.h>
 
 class vx_device {
-  static constexpr uint64_t code_base=0x80000000, code_end=0x80010000;
-  static constexpr uint64_t heap_base=0x10000, heap_end=0x20000;
-  static constexpr size_t map_size=0x80000, ram_window=0x40000;
+  static constexpr uint64_t code_base=0x80000000, code_end=0x80020000;
+  static constexpr uint64_t heap_base=0x10000, heap_end=0x30000;
+  static constexpr size_t map_size=0x100000, ram_window=0x40000;
   int fd_=-1, lock_=-1;
   volatile uint32_t* regs_=nullptr;
   std::map<uint64_t,uint64_t> blocks_;
@@ -30,8 +30,9 @@ class vx_device {
     return a>=lo && a<=hi && n<=hi-a;
   }
   static int ram_offset(uint64_t a,uint64_t n,size_t* offset) {
-    if(range(a,n,code_base,code_end)) *offset=size_t(a-code_base);
-    else if(range(a,n,heap_base,heap_end)) *offset=size_t(a);
+    if(range(a,n,code_base,code_end)) *offset=ram_window+size_t(a-code_base);
+    else if(range(a,n,heap_base,heap_end)) *offset=ram_window+0x20000+size_t(a-heap_base);
+    else if(range(a,n,0x80,0x180)) *offset=0x1000+size_t(a-0x80);
     else return -1;
     return 0;
   }
@@ -61,12 +62,12 @@ public:
     void* mapped=mmap(nullptr,map_size,PROT_READ|PROT_WRITE,MAP_SHARED,fd_,base);
     if(mapped==MAP_FAILED) { std::perror("KV260 mmap"); return -1; }
     regs_=static_cast<volatile uint32_t*>(mapped);
-    if(rd(0)!=0x56584446 || rd(4)!=0x20000 || rd(0x10)!=0x01040420 ||
-       rd(0x14)!=0x40000 || rd(0x48)!=0x1a2cde44 || rd(0x4c)!=0x404 || rd(0x50)!=4096) {
+    if(rd(0)!=0x56584446 || rd(4)!=0x50000 || rd(0x10)!=0x01040420 ||
+       rd(0x14)!=0x60000 || rd(0x48)!=0x08463752 || rd(0x4c)!=0x404 || rd(0x50)!=4096 || rd(0x54)!=0) {
       std::fprintf(stderr,"KV260 image/config mismatch; load this package's new bitstream\n"); return -1;
     }
     wr(8,2);
-    for(size_t off=ram_window;off<map_size;off+=4) wr(off,0);
+    for(size_t off=ram_window;off<ram_window+0x60000;off+=4) wr(off,0);
     return 0;
   }
   ~vx_device() {
@@ -84,11 +85,11 @@ public:
       case VX_CAPS_NUM_WARPS: *value=4; break;
       case VX_CAPS_NUM_CORES: *value=1; break;
       case VX_CAPS_CACHE_LINE_SIZE: *value=64; break;
-      case VX_CAPS_GLOBAL_MEM_SIZE: *value=0x40000; break;
+      case VX_CAPS_GLOBAL_MEM_SIZE: *value=heap_end-heap_base; break;
       case VX_CAPS_LOCAL_MEM_SIZE: *value=1u<<LMEM_LOG_SIZE; break;
       case VX_CAPS_ISA_FLAGS: *value=(uint64_t(MISA_EXT)<<32)|(1ull<<30)|MISA_STD; break;
       case VX_CAPS_NUM_MEM_BANKS: *value=1; break;
-      case VX_CAPS_MEM_BANK_SIZE: *value=0x40000; break;
+      case VX_CAPS_MEM_BANK_SIZE: *value=heap_end-heap_base; break;
       default: return -1;
     }
     return 0;
@@ -126,10 +127,10 @@ public:
     auto bytes=static_cast<const uint8_t*>(src);
     for(uint64_t i=0;i<n;) {
       size_t p=off+size_t(i), word=p&~size_t(3);
-      uint32_t v=rd(ram_window+word);
+      uint32_t v=rd(word);
       do { unsigned shift=unsigned(p&3)*8; v=(v&~(255u<<shift))|(uint32_t(bytes[i])<<shift); ++i; ++p; }
       while(i<n && (p&3));
-      wr(ram_window+word,v);
+      wr(word,v);
     }
     return 0;
   }
@@ -137,7 +138,7 @@ public:
     size_t off;
     if(running_ || ram_offset(a,n,&off)) return -1;
     auto bytes=static_cast<uint8_t*>(dst);
-    for(uint64_t i=0;i<n;i++) bytes[i]=uint8_t(rd(ram_window+((off+i)&~size_t(3)))>>(((off+i)&3)*8));
+    for(uint64_t i=0;i<n;i++) bytes[i]=uint8_t(rd((off+i)&~size_t(3))>>(((off+i)&3)*8));
     return 0;
   }
   int dcr_write(uint32_t a,uint32_t v) {

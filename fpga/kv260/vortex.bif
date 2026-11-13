@@ -1,4 +1,4 @@
 all:
 {
-    kv260-vortex.bit
+    kv260-vortex-int.bit
 }

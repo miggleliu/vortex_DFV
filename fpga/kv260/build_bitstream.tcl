@@ -21,7 +21,7 @@ file mkdir $artifacts
 report_utilization -file [file join $artifacts utilization_routed.rpt]
 report_timing_summary -delay_type min_max -report_unconstrained -file [file join $artifacts timing_routed.rpt]
 report_drc -file [file join $artifacts drc_routed.rpt]
-write_hw_platform -fixed -include_bit -force -file [file join $artifacts kv260-vortex.xsa]
+write_hw_platform -fixed -include_bit -force -file [file join $artifacts kv260-vortex-int.xsa]
 set bitfile [file join [get_property DIRECTORY $run] vortex_bd_wrapper.bit]
-file copy -force $bitfile [file join $artifacts kv260-vortex.bit]
+file copy -force $bitfile [file join $artifacts kv260-vortex-int.bit]
 puts "INFO: Board bitstream exported to $artifacts. Review routed timing and DRC before deployment."

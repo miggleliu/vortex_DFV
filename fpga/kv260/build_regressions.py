@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build upstream regression host sources for ARM and kernels for RV32.
 
-Uses the exact combo patcher/defaults in tests/run_dfv_combos.py on private copies.
-Never edits the verified regression kernels in the checkout.
+Compiles the original applications once and records runtime combinations from
+tests/run_dfv_combos.py. Never patches kernels to preload DFV CSR values.
 """
 import argparse
 import hashlib
@@ -23,9 +23,7 @@ sys.path.insert(0,str(ROOT/'tests'))
 import run_dfv_combos as combos
 
 # Contract of the already-built FPGA image. Git history is provenance, not ABI.
-PROFILE_DEFINES = ['XLEN_32','NUM_CLUSTERS=1','NUM_CORES=1','NUM_WARPS=4',
-    'NUM_THREADS=4','EXT_F_DISABLE','ICACHE_SIZE=4096','DCACHE_SIZE=4096',
-    'DCACHE_NUM_BANKS=4','PLATFORM_MEMORY_NUM_BANKS=1']
+PROFILE_DEFINES = json.loads((PORT/'config.json').read_text())['defines']
 BOARD_ABI = {
     'XLEN':32,'NUM_CLUSTERS':1,'NUM_CORES':1,'NUM_WARPS':4,'NUM_THREADS':4,
     'ICACHE_SIZE':4096,'DCACHE_SIZE':4096,'DCACHE_NUM_BANKS':4,
@@ -88,8 +86,8 @@ def check_compatibility(root, cfg, apps, native_cxx='g++'):
             source += ['}']
             cpp=work/'probe.cpp';cpp.write_text('\n'.join(source)+'\n')
             exe=work/'probe'
-            command=[native_cxx,'-std=c++17',*['-D'+d for d in cfg['defines']],'-DTYPE=int',
-                     '-I'+str(work),'-I'+str(root/'tests/regression'/app),str(cpp),'-o',str(exe)]
+            command=[native_cxx,'-std=c++17',*['-D'+d for d in cfg['defines']],
+                     *shlex.split(combos.app_configs(app)),'-I'+str(work),'-I'+str(root/'tests/regression'/app),str(cpp),'-o',str(exe)]
             compiled=subprocess.run(command,capture_output=True,text=True)
             if compiled.returncode:
                 raise ValueError(f'{app}: cannot compile FPGA interface probe:\n{compiled.stderr}')
@@ -105,36 +103,43 @@ def check_compatibility(root, cfg, apps, native_cxx='g++'):
 def source_provenance(root, cfg):
     revision=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
     dirty=subprocess.check_output(['git','-C',str(root),'status','--porcelain','--',
-        'hw','kernel','runtime','sim/common','tests'],text=True).splitlines()
+        'hw','kernel','runtime','sim/common','tests','fpga/kv260'],text=True).splitlines()
     delta=subprocess.run(['git','-C',str(root),'diff','--name-only',cfg['upstream_commit'],
                          '--','hw/rtl'],capture_output=True,text=True)
     return {'software_commit':revision,'hardware_commit':cfg['upstream_commit'],
             'working_tree_changes':dirty,
             'rtl_changed_from_image':delta.stdout.splitlines() if not delta.returncode else None}
 
-def check_image(image, elf, objdump, nm):
+def check_image(image, elf, objdump, nm, cfg):
     data=image.read_bytes()
     if len(data)<=16: raise ValueError('Truncated kernel.vxbin')
     lo,hi=struct.unpack('<QQ',data[:16])
-    if lo!=0x80000000 or hi>0x80010000 or hi<=lo or len(data)-16>hi-lo:
-        raise ValueError(f'Kernel does not fit the 64 KiB code region: {lo:#x}..{hi:#x}')
+    if lo!=cfg['code_base'] or hi>cfg['code_limit'] or hi<=lo or len(data)-16>hi-lo:
+        raise ValueError(f'Kernel does not fit the 128 KiB code region: {lo:#x}..{hi:#x}')
     symbols={}
     for line in subprocess.check_output([nm,str(elf)],text=True).splitlines():
         m=re.match(r'([0-9a-fA-F]+)\s+\w\s+(\S+)',line)
         if m: symbols[m[2]]=int(m[1],16)
     if not all(s in symbols for s in ['_end','__tbss_size']):
         raise ValueError('Kernel lacks standard startup/TLS symbols')
-    if symbols['_end']+16*symbols['__tbss_size']>0x80010000:
+    if symbols['_end']+16*symbols['__tbss_size']>cfg['code_limit']:
         raise ValueError('Per-hart TLS overlaps the end of the code/TLS allocation')
     asm=subprocess.check_output([objdump,'-d',str(elf)],text=True)
-    # This first bitstream has no F/D/C/A/V instructions. Reject a kernel instead
-    # of starting unsupported instructions on hardware. Custom Vortex opcodes pass.
+    # This image implements RV32IM plus Vortex custom instructions. Reject
+    # D/C/A/V and malformed images instead of executing unsupported instructions.
+    if elf.read_bytes()[:6] != b'\x7fELF\x01\x01':
+        raise ValueError('Expected a little-endian RV32 ELF')
     for line in asm.splitlines():
         m=re.match(r'\s*[0-9a-f]+:\s+([0-9a-f]{4,8})\s+(\S+)',line)
         if not m: continue
         opcode=int(m[1],16)&0x7f
         if len(m[1])!=8 or opcode in {0x07,0x27,0x43,0x47,0x4b,0x4f,0x53,0x57,0x2f}:
-            raise ValueError('Instruction outside the integer FPGA profile: '+line.strip())
+            raise ValueError('Instruction outside the RV32IM FPGA profile: '+line.strip())
+        word=int(m[1],16)
+        if ((opcode in {0x07,0x27} and (word>>12)&7 != 2)
+            or (opcode in {0x43,0x47,0x4b,0x4f} and (word>>25)&3 != 0)
+            or (opcode==0x53 and ((word>>25)&1 or ((word>>25)==0x20 and (word>>20)&31==1)))):
+            raise ValueError('Non-FP32 instruction: '+line.strip())
     return {'min_vma':lo,'max_vma':hi,'file_bytes':len(data),
             'sha256':hashlib.sha256(data).hexdigest()}
 
@@ -142,8 +147,8 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--build',type=Path,help='Configured RV32 Vortex build directory')
     ap.add_argument('--out',type=Path,help='New bundle directory')
-    ap.add_argument('--apps',nargs='+',choices=['demo','vecadd'],default=['demo'])
-    ap.add_argument('--type',type=int,choices=[1,2,3],default=1)
+    ap.add_argument('--apps',nargs='+',choices=sorted(combos.TEST_APPS),default=list(combos.TEST_APPS))
+    ap.add_argument('--type','--types',dest='types',nargs='+',type=int,choices=[1,2,3],default=[1,2,3])
     ap.add_argument('--host-cxx',default='aarch64-linux-gnu-g++')
     ap.add_argument('--native-cxx',default='g++',help='Native compiler for interface preflight')
     ap.add_argument('--check-only',action='store_true',help='Check interface compatibility without the RV32 SDK or building outputs')
@@ -188,42 +193,51 @@ def main():
         subprocess.run([a.host_cxx,'-std=c++17','-O2','-DNDEBUG','-fPIC','-shared',*defs,*includes,*map(str,sources),*libs,'-o',str(runtime/f'lib{name}.so')],check=True)
     kn=out/'kernel';kn.mkdir()
     cflags=['-march=rv32imaf','-mabi=ilp32f','-O3','-mcmodel=medany','-fno-exceptions','-fdata-sections','-ffunction-sections',
-            '-I'+str(ROOT/'kernel/include'),'-I'+str(out/'hw'),*defs]
+            '-I'+str(ROOT/'kernel/include'),'-I'+str(ROOT/'sim/common'),'-I'+str(out/'hw'),*defs]
     subprocess.run(['make','-f',str(ROOT/'kernel/Makefile'),f'ROOT_DIR={out}',f'CFLAGS={shlex.join(cflags)}','libvortex.a'],cwd=kn,check=True)
-    result={'upstream_commit':revision,**provenance,'compatibility':compatibility,
-            'profile':cfg,'type':a.type,'cases':[]}
+    import dfv_host
+    result={'format_version':2, 'upstream_commit':revision, **provenance,
+            'compatibility':compatibility, 'profile':cfg, 'types':a.types,
+            'cases':[], 'apps':{}}
     source_hashes={}
-    choices={1:combos.COMBOS_TYPE1,2:combos.COMBOS_TYPE2,3:combos.COMBOS_TYPE3}[a.type]
+    app_root=out/'apps';app_root.mkdir()
+    shutil.copyfile(ROOT/'tests/regression/common.mk',app_root/'common.mk')
     for app in a.apps:
         original=ROOT/'tests/regression'/app
+        case=app_root/app; source=case/'source';source.mkdir(parents=True)
         for p in original.iterdir():
-            if p.is_file(): source_hashes[str(p.relative_to(ROOT))]=hashlib.sha256(p.read_bytes()).hexdigest()
-        for combo in choices:
-            tag=combos.combo_tag(combo)
-            case=out/'cases'/app/tag; source=case/'source'; source.mkdir(parents=True)
-            for p in original.iterdir():
-                if p.is_file(): shutil.copyfile(p,source/p.name)
-            saved=combos.kernel_path
-            try:
-                combos.kernel_path=lambda _:str(source/'kernel.cpp')
-                combos.patch_kernel(app,combo)
-            finally: combos.kernel_path=saved
-            # The integer-only image uses vecadd's existing TYPE customization.
-            # This is explicitly a different data-type variant of the same test.
-            flags=defs+(['-DTYPE=int'] if app=='vecadd' else [])
-            mk=case/'Makefile'
-            mk.write_text(f'include {out}/config.mk\nPROJECT := {app}\nSRC_DIR := {source}\nSRCS := $(SRC_DIR)/main.cpp\nVX_SRCS := $(SRC_DIR)/kernel.cpp\nCONFIGS := {shlex.join(flags)}\ninclude {ROOT}/tests/regression/common.mk\n')
-            subprocess.run(['make',f'ROOT_DIR={out}',f'CXX={a.host_cxx}',app,'kernel.vxbin'],cwd=case,check=True)
-            info=check_image(case/'kernel.vxbin',case/'kernel.elf',objdump,nm)
-            result['cases'].append({'app':app,'combo':tag,'args':shlex.split(combos.TEST_APPS[app])+['-d'],
-                                    'dtype':'int','combo_configuration':combo,'directory':str(case.relative_to(out)),**info})
+            if p.is_file() and (p.name=='Makefile' or p.suffix in {'.cpp','.c','.h','.hpp','.S'}):
+                source_hashes[str(p.relative_to(ROOT))]=hashlib.sha256(p.read_bytes()).hexdigest()
+                shutil.copyfile(p,source/p.name)
+        # Use each original Makefile and checker; no substitute kernels or TYPE
+        # changes. Each app is compiled once, independent of the DFV combinations.
+        shutil.copyfile(source/'Makefile',case/'Makefile')
+        subprocess.run(['make', f'ROOT_DIR={out}', f'SRC_DIR={source}',
+                        f'CONFIGS={shlex.join(defs)} {combos.app_configs(app)}', f'CXX={a.host_cxx}',
+                        app, 'kernel.vxbin'],cwd=case,check=True)
+        info=check_image(case/'kernel.vxbin',case/'kernel.elf',objdump,nm,cfg)
+        info['directory']=str(case.relative_to(out))
+        result['apps'][app]=info
+        for test_type in dict.fromkeys(a.types):
+            choices={1:combos.COMBOS_TYPE1,2:combos.COMBOS_TYPE2,3:combos.COMBOS_TYPE3}[test_type]
+            for combo in choices:
+                result['cases'].append({'app':app, 'type':test_type,
+                    'combo':combos.combo_tag(combo), 'args':shlex.split(combos.TEST_APPS[app])+['-d'],
+                    'dtype':'int' if app in combos.INTEGER_TYPE_APPS else 'original-integer', 'combo_configuration':combo,
+                    'host_csrs':{hex(k):v for k,v in dfv_host.combo_values(combo,combos).items()}, **info})
     result['regression_source_sha256']=source_hashes
+    result['runtime_source_sha256']={str(path.relative_to(ROOT)):hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in [ROOT/'runtime/stub/vortex.cpp',ROOT/'runtime/stub/dfv_config.inc',
+                     ROOT/'runtime/stub/utils.cpp',ROOT/'sim/common/dfv_config.h',
+                     ROOT/'kernel/include/vx_dfv_host.h',PORT/'runtime/vortex.cpp']}
+    result['runtime_sha256']={path.name:hashlib.sha256(path.read_bytes()).hexdigest()
+                             for path in runtime.glob('*.so')}
     (out/'bundle.json').write_text(json.dumps(result,indent=2)+'\n')
     for name in ['run_board.py','README.md']:
         shutil.copyfile(PORT/name,out/name)
     (out/'tests').mkdir()
-    for name in ['dfv_csr.py','run_dfv_combos.py']:
+    for name in ['dfv_csr.py','run_dfv_combos.py','dfv_host.py']:
         shutil.copyfile(ROOT/'tests'/name,out/'tests'/name)
-    print(f'Built {len(result["cases"])} existing regression variants; transfer {out} to the KV260')
+    print(f'Built {len(result["apps"])} original regression apps for {len(result["cases"])} runtime cases; transfer {out} to the KV260')
 
 if __name__=='__main__': main()

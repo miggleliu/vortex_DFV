@@ -12,7 +12,7 @@ proc kv260_create_board_project {root out} {
     if {[llength [get_parts -quiet $part]] != 1} {error "Install production Zynq UltraScale+ MPSoC device support."}
     set boards [lsort -dictionary [get_board_parts -quiet xilinx.com:kv260_som:part0:*]]
     if {![llength $boards]} {error "KV260 board preset unavailable. Install the KV260 SOM board files in Vivado's board manager."}
-    create_project kv260_vortex $out -part $part
+    create_project kv260_vortex_int $out -part $part
     set_property board_part [lindex $boards end] [current_project]
     set_property target_language Verilog [current_project]
     set_param general.maxThreads 4
@@ -65,7 +65,7 @@ proc kv260_create_board_project {root out} {
     connect_bd_net [get_bd_pins rst/peripheral_aresetn] [get_bd_pins gpu/aresetn] [get_bd_pins axi_sc/aresetn]
     set slave_segs [get_bd_addr_segs -of_objects [get_bd_intf_pins gpu/S_AXI]]
     if {[llength $slave_segs] != 1} {error "Expected one inferred AXI-Lite register/memory segment, got: $slave_segs"}
-    assign_bd_address -offset 0xA0000000 -range 0x00080000 \
+    assign_bd_address -offset 0xA0000000 -range 0x00100000 \
         -target_address_space [get_bd_addr_spaces ps/Data] $slave_segs -force
     validate_bd_design
     # The PS can report 99,999,001 Hz for a nominal 100 MHz request. Input-clock
@@ -93,5 +93,5 @@ proc kv260_create_board_project {root out} {
     puts "INFO: Review the block design, then source [file join $root build_bitstream.tcl]"
 }
 set kv260_board_root [file dirname [file normalize [info script]]]
-if {![info exists kv260_board_out]} {set kv260_board_out [file join $kv260_board_root vivado_project]}
+if {![info exists kv260_board_out]} {set kv260_board_out [file join $kv260_board_root vivado_project_int]}
 kv260_create_board_project $kv260_board_root [file normalize $kv260_board_out]

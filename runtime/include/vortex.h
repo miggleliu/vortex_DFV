@@ -110,6 +110,14 @@ int vx_start(vx_device_h hdevice, vx_buffer_h hkernel, vx_buffer_h harguments);
 // Wait for device ready with milliseconds timeout
 int vx_ready_wait(vx_device_h hdevice, uint64_t timeout);
 
+// Stage runtime DFV control CSR values before vx_start. The shared kernel
+// helper applies them at the measured-region boundary. Writes while running
+// are rejected. CSR addresses are restricted to 0x7c0..0x7ce.
+int vx_dfv_csr_write(vx_device_h hdevice, uint32_t addr, uint32_t value);
+// Read the actual applied GPU settings after a successful vx_ready_wait.
+// Readback is from core 0 at setup time; this is not a live halted-core debugger.
+int vx_dfv_csr_read(vx_device_h hdevice, uint32_t addr, uint32_t* value);
+
 // read device configuration registers
 int vx_dcr_read(vx_device_h hdevice, uint32_t addr, uint32_t* value);
 

@@ -35,16 +35,16 @@ def main():
                         *['-I'+str(ROOT/d) for d in ['runtime/include','runtime/common','sim/common']],
                         str(PORT/'runtime/vortex.cpp'),'-o',str(lib)],check=True)
         device_file=tmp/'mmio.bin'
-        image=bytearray(0x80000)
-        for off,v in [(0,0x56584446),(4,0x20000),(0x10,0x01040420),(0x14,0x40000),
-                      (0x48,0x1a2cde44),(0x4c,0x404),(0x50,4096)]: struct.pack_into('<I',image,off,v)
+        image=bytearray(0x100000)
+        for off,v in [(0,0x56584446),(4,0x50000),(0x10,0x01040420),(0x14,0x60000),
+                      (0x48,0x08463752),(0x4c,0x404),(0x50,4096),(0x54,0)]: struct.pack_into('<I',image,off,v)
         device_file.write_bytes(image)
         os.environ['VORTEX_KV260_MEM']=str(device_file)
         os.environ['VORTEX_KV260_TIMEOUT_MS']='1'
         dll=c.CDLL(str(lib)); cb=Callbacks()
         assert dll.vx_dev_init(c.byref(cb))==0
         dev=P();assert cb.dev_open(c.byref(dev))==0
-        for cap,expected in [(1,4),(2,4),(3,1),(4,64),(5,0x40000)]:
+        for cap,expected in [(1,4),(2,4),(3,1),(4,64),(5,0x20000)]:
             v=Q();assert cb.dev_caps(dev,cap,c.byref(v))==0 and v.value==expected
         first=P();second=P();kernel=P();args=P()
         assert cb.mem_alloc(dev,5,3,c.byref(first))==0
@@ -52,12 +52,17 @@ def main():
         address=Q();assert cb.mem_address(first,c.byref(address))==0 and address.value==0x10000
         assert cb.mem_reserve(dev,0x10001,32,3,c.byref(args))!=0
         assert cb.mem_reserve(dev,0x80000000,0x100,1,c.byref(kernel))==0
-        assert cb.mem_reserve(dev,0x8000fff0,32,1,c.byref(args))!=0
+        assert cb.mem_reserve(dev,0x8001fff0,32,1,c.byref(args))!=0
         data=c.create_string_buffer(b'ABCDE');out=c.create_string_buffer(5)
         assert cb.copy_to_dev(second,data,1,5)==0
         assert cb.copy_from_dev(out,second,1,5)==0 and out.raw==b'ABCDE'
         assert cb.copy_to_dev(first,data,4,5)!=0
         assert cb.copy_from_dev(out,second,127,5)!=0
+        io=P()
+        assert cb.mem_reserve(dev,0x80,64,3,c.byref(io))==0
+        assert cb.copy_to_dev(io,data,1,5)==0
+        assert cb.copy_from_dev(out,io,1,5)==0 and out.raw==b'ABCDE'
+        assert cb.mem_free(io)==0
         assert cb.mem_free(first)==0
         assert cb.mem_alloc(dev,8,3,c.byref(args))==0
         assert cb.mem_address(args,c.byref(address))==0 and address.value==0x10000

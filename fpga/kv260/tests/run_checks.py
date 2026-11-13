@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import struct
 import sys
 
 PORT=Path(__file__).resolve().parents[1]
@@ -30,7 +31,8 @@ def main():
         with (work/name).open('w') as log:
             subprocess.run(command,cwd=cwd,stdout=log,stderr=subprocess.STDOUT,check=True)
     run([sys.executable,str(PORT/'tests/test_driver.py')],'driver-test.log',ROOT)
-    run([sys.executable,'-m','unittest','discover','-s','tests','-p','test_dfv_csr.py','-v'],
+    run([sys.executable,str(PORT/'tests/test_host_control.py')],'host-control-test.log',ROOT)
+    run([sys.executable,'-m','unittest','discover','-s','tests','-p','test_dfv*.py','-v'],
         'upstream-csr-tests.log',ROOT)
     files=['-f','sources.f','kv260_native_bram.sv','kv260_vortex_bram.sv','kv260_vortex_bd.v']
     run([a.verilator,'--lint-only','--top-module','kv260_vortex_bd',*files],'rtl-lint.log')
@@ -38,11 +40,12 @@ def main():
         (work/f'kernel_{n}.hex').write_text(''.join(f'{v:08x}\n' for v in smoke_words(n)))
     for top,bench,folder in [('tb_backend','tb_backend.sv','obj_backend'),
                               ('tb_kv260_vortex_bram','tb_board.sv','obj_board')]:
+        extras=[]
         run([a.verilator,'--binary','--timing','--assert','--timescale-override','1ns/1ps',
              '--top-module',top,'-j','4','-MAKEFLAGS','OBJCACHE= VK_PCH_I_FAST= VK_PCH_I_SLOW=',
-             *files,str(PORT/'tests'/bench),'--Mdir',folder],folder+'-build.log')
+             *files,str(PORT/'tests'/bench),*extras,'--Mdir',folder],folder+'-build.log')
         run([str(work/folder/f'V{top}')],folder+'-test.log')
-    print('PASS: native runtime API tests, 12 upstream CSR/parser tests, RTL lint, backend and complete GPU-wrapper simulations')
+    print('PASS: native runtime/API tests, shared parser/helper tests, RTL lint, backend and GPU-wrapper simulations')
     print('These checks do not claim SDK kernel compilation, Vivado fit/timing or physical board execution.')
 
 if __name__=='__main__': main()

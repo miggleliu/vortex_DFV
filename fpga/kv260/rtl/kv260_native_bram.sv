@@ -3,7 +3,7 @@
 module kv260_native_bram import VX_gpu_pkg::*; (
     input wire clk, gpu_reset, io_clear,
     input wire host_en, host_write,
-    input wire [17:0] host_addr,
+    input wire [18:0] host_addr,
     input wire [31:0] host_wdata,
     input wire [3:0] host_wstrb,
     output wire [31:0] host_rdata,
@@ -22,22 +22,26 @@ module kv260_native_bram import VX_gpu_pkg::*; (
     input wire console_pop,
     output wire [31:0] console_data, console_count,
     input wire [5:0] perf_addr,
+    input wire perf_clear, perf_host_write,
+    input wire [5:0] perf_host_addr,
+    input wire [31:0] perf_host_data,
+    input wire [3:0] perf_host_strb,
     output wire [31:0] perf_rdata
 );
     if (VX_MEM_DATA_WIDTH != 512 || VX_MEM_ADDR_WIDTH != 26) begin : g_bad_config
         initial $fatal(1, "KV260 BRAM backend requires RV32 and 64-byte lines");
     end
     wire [31:0] byte_addr = {req_addr, 6'b0};
-    wire is_code = byte_addr[31:16] == 16'h8000;
-    wire is_heap = byte_addr[31:16] == 16'h0001;
+    wire is_code = byte_addr >= 32'h80000000 && byte_addr < 32'h80020000;
+    wire is_heap = byte_addr >= 32'h00010000 && byte_addr < 32'h00030000;
     wire is_stack = byte_addr >= 32'hfffd0000 && byte_addr < 32'hffff0000;
     wire is_ram = is_code || is_heap || is_stack;
     wire is_console = byte_addr == 32'h40;
     wire is_perf = byte_addr >= 32'h80 && byte_addr < 32'h180;
     wire is_fence = !req_write && byte_addr == 0;
-    wire [17:0] ram_addr = is_code ? {2'b00,byte_addr[15:0]} :
-        is_heap ? {2'b01,byte_addr[15:0]} :
-        18'h20000 + 18'(byte_addr - 32'hfffd0000);
+    wire [18:0] ram_addr = is_code ? 19'(byte_addr - 32'h80000000) :
+        is_heap ? 19'h20000 + 19'(byte_addr - 32'h00010000) :
+        19'h40000 + 19'(byte_addr - 32'hfffd0000);
     logic read_pending, read_ram, read_perf;
     logic [1:0] perf_line;
     logic [VX_MEM_TAG_WIDTH-1:0] read_tag;
@@ -77,7 +81,7 @@ module kv260_native_bram import VX_gpu_pkg::*; (
         if(io_clear) begin
             cout_pending_mask<=0; cout_pending_data<=0;
             cout_wr<=0; cout_rd<=0; cout_size<=0;
-            for(integer i=0;i<64;i++) perf_memory[i]<=0;
+
         end else begin
             if(cout_push) begin
                 cout_fifo[cout_wr] <= {cout_index,cout_pending_data[8*cout_index +: 8]};
@@ -94,32 +98,42 @@ module kv260_native_bram import VX_gpu_pkg::*; (
                 cout_pending_mask<=req_byteen;
                 cout_pending_data<=req_data;
             end
-            if(fire && req_write && is_perf)
-                for(integer i=0;i<16;i++)
-                    for(integer b=0;b<4;b++)
-                        if(req_byteen[4*i+b])
-                            perf_memory[{byte_addr[7:6]-2'd2,4'(i)}][8*b+:8]
-                                <=req_data[32*i+8*b+:8];
+
+        end
+    end
+    // I/O-address regression preloads the MPM address range. Preserve it at
+    // launch; the normal exit routine overwrites the counters after the test.
+    always @(posedge clk) begin
+        if(perf_clear) begin
+            for(integer i=0;i<64;i++) perf_memory[i]<=0;
+        end else if(fire && req_write && is_perf) begin
+            for(integer i=0;i<16;i++)
+                for(integer b=0;b<4;b++)
+                    if(req_byteen[4*i+b])
+                        perf_memory[{byte_addr[7:6]-2'd2,4'(i)}][8*b+:8] <=req_data[32*i+8*b+:8];
+        end else if(perf_host_write) begin
+            for(integer b=0;b<4;b++)
+                if(perf_host_strb[b]) perf_memory[perf_host_addr][8*b+:8]<=perf_host_data[8*b+:8];
         end
     end
     assign host_rdata = host_words[host_bank];
     for(genvar bank=0;bank<16;bank++) begin : g_bank
-        (* ram_style="block" *) logic [31:0] memory [0:4095];
+        (* ram_style="block" *) logic [31:0] memory [0:6143];
         logic [31:0] host_q,gpu_q;
         always @(posedge clk) begin
             if(host_en && host_addr[5:2] == 4'(bank)) begin
                 if(host_write)
                     for(integer b=0;b<4;b++)
-                        if(host_wstrb[b]) memory[host_addr[17:6]][8*b+:8]<=host_wdata[8*b+:8];
-                host_q<=memory[host_addr[17:6]];
+                        if(host_wstrb[b]) memory[host_addr[18:6]][8*b+:8]<=host_wdata[8*b+:8];
+                host_q<=memory[host_addr[18:6]];
             end
         end
         always @(posedge clk) begin
             if(gpu_ram_en) begin
                 if(req_write)
                     for(integer b=0;b<4;b++)
-                        if(req_byteen[4*bank+b]) memory[ram_addr[17:6]][8*b+:8]<=req_data[32*bank+8*b+:8];
-                gpu_q<=memory[ram_addr[17:6]];
+                        if(req_byteen[4*bank+b]) memory[ram_addr[18:6]][8*b+:8]<=req_data[32*bank+8*b+:8];
+                gpu_q<=memory[ram_addr[18:6]];
             end
         end
         assign host_words[bank]=host_q;

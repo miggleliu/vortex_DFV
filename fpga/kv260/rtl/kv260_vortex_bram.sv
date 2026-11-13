@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// First KV260 integration: AXI-Lite control + 256 KiB program/data/stack RAM + standard Vortex console/MPM.
+// First KV260 integration: AXI-Lite control + 384 KiB program/data/stack RAM + standard Vortex console/MPM.
 module kv260_vortex_bram import VX_gpu_pkg::*; (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 aclk CLK",
        X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF S_AXI, ASSOCIATED_RESET aresetn" *)
@@ -8,8 +8,8 @@ module kv260_vortex_bram import VX_gpu_pkg::*; (
        X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
     input wire aresetn,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 S_AXI AWADDR",
-       X_INTERFACE_PARAMETER = "PROTOCOL AXI4LITE, DATA_WIDTH 32, ADDR_WIDTH 19, READ_WRITE_MODE READ_WRITE" *)
-    input wire [18:0] s_axi_awaddr,
+       X_INTERFACE_PARAMETER = "PROTOCOL AXI4LITE, DATA_WIDTH 32, ADDR_WIDTH 20, READ_WRITE_MODE READ_WRITE" *)
+    input wire [19:0] s_axi_awaddr,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 S_AXI AWPROT" *)
     input wire [2:0] s_axi_awprot,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 S_AXI AWVALID" *)
@@ -31,7 +31,7 @@ module kv260_vortex_bram import VX_gpu_pkg::*; (
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 S_AXI BREADY" *)
     input wire s_axi_bready,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 S_AXI ARADDR" *)
-    input wire [18:0] s_axi_araddr,
+    input wire [19:0] s_axi_araddr,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 S_AXI ARPROT" *)
     input wire [2:0] s_axi_arprot,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 S_AXI ARVALID" *)
@@ -51,7 +51,7 @@ module kv260_vortex_bram import VX_gpu_pkg::*; (
         initial $fatal(1, "This first board wrapper requires one native memory port");
     end
     logic aw_pending, w_pending, read_pending;
-    logic [18:0] awaddr;
+    logic [19:0] awaddr;
     logic [31:0] wdata;
     logic [3:0] wstrb;
     logic run_enable, active, done, seen_busy;
@@ -73,14 +73,14 @@ module kv260_vortex_bram import VX_gpu_pkg::*; (
     wire [VX_MEM_TAG_WIDTH-1:0] rsp_tag [VX_MEM_PORTS];
     wire address_fault;
     wire [31:0] console_data, console_count, perf_rdata;
-    wire console_pop = read_fire && s_axi_araddr == 19'h00040;
+    wire console_pop = read_fire && s_axi_araddr == 20'h00040;
     wire [31:0] host_rdata;
     wire write_fire = aw_pending && w_pending && !s_axi_bvalid;
     wire read_fire = s_axi_arvalid && s_axi_arready;
-    wire command_start = write_fire && awaddr == 19'h00008 && wstrb[0] && wdata[0];
+    wire command_start = write_fire && awaddr == 20'h00008 && wstrb[0] && wdata[0];
     wire host_allowed = !active && !command_start;
-    wire host_write = write_fire && awaddr[18] && awaddr[1:0] == 0 && host_allowed;
-    wire host_read = read_fire && s_axi_araddr[18] && s_axi_araddr[1:0] == 0 && host_allowed;
+    wire host_write = write_fire && awaddr >= 20'h40000 && awaddr < 20'ha0000 && awaddr[1:0] == 0 && host_allowed;
+    wire host_read = read_fire && s_axi_araddr >= 20'h40000 && s_axi_araddr < 20'ha0000 && s_axi_araddr[1:0] == 0 && host_allowed;
     // Simultaneous host read+write is serialized: ARREADY waits for writes.
     assign s_axi_arready = aresetn && !s_axi_rvalid && !read_pending && !write_fire;
     assign s_axi_awready = aresetn && !aw_pending && !s_axi_bvalid;
@@ -89,8 +89,11 @@ module kv260_vortex_bram import VX_gpu_pkg::*; (
         .clk(aclk), .gpu_reset(gpu_reset), .io_clear(!aresetn || command_start),
         .console_pop(console_pop), .console_data(console_data), .console_count(console_count),
         .perf_addr(s_axi_araddr[7:2]), .perf_rdata(perf_rdata),
+        .perf_clear(!aresetn),
+        .perf_host_write(write_fire && awaddr[1:0] == 0 && awaddr >= 20'h01000 && awaddr < 20'h01100 && host_allowed),
+        .perf_host_addr(awaddr[7:2]), .perf_host_data(wdata), .perf_host_strb(wstrb),
         .host_en(host_write || host_read), .host_write(host_write),
-        .host_addr(host_write ? awaddr[17:0] : s_axi_araddr[17:0]),
+        .host_addr(host_write ? 19'(awaddr - 20'h40000) : 19'(s_axi_araddr - 20'h40000)),
         .host_wdata(wdata), .host_wstrb(wstrb), .host_rdata(host_rdata),
         .req_valid(req_valid[0]), .req_ready(req_ready[0]), .req_write(req_rw[0]),
         .req_addr(req_addr[0]), .req_data(req_data[0]), .req_byteen(req_byteen[0]),
@@ -109,20 +112,21 @@ module kv260_vortex_bram import VX_gpu_pkg::*; (
     function automatic [31:0] read_register(input [15:0] offset);
         case (offset)
             16'h0000: read_register = 32'h56584446;
-            16'h0004: read_register = 32'h00020000;
+            16'h0004: read_register = 32'h00050000;
             16'h0008: read_register = {31'b0,run_enable};
             16'h000c: read_register = {26'b0,seen_busy,gpu_reset,(error_code != 0),done,active,gpu_busy};
             16'h0010: read_register = 32'h01040420; // 1 core, 4 warps, 4 threads, RV32
-            16'h0014: read_register = 32'h00040000; // shared RAM bytes
+            16'h0014: read_register = 32'h00060000; // shared RAM bytes
             16'h0020: read_register = {20'b0,dcr_addr};
             16'h0030: read_register = cycles[31:0];
             16'h0034: read_register = cycles[63:32];
             16'h0038: read_register = error_code;
             16'h0040: read_register = console_data;
             16'h0044: read_register = console_count;
-            16'h0048: read_register = 32'h1a2cde44; // upstream revision signature
+            16'h0048: read_register = 32'h08463752; // upstream revision signature
             16'h004c: read_register = 32'h00000404; // D-cache banks=4, I-cache KiB=4
             16'h0050: read_register = 32'h00001000; // D-cache bytes=4096
+            16'h0054: read_register = 0; // Integer-only profile
             default: read_register = 0;
         endcase
     endfunction
@@ -161,9 +165,12 @@ module kv260_vortex_bram import VX_gpu_pkg::*; (
             if (write_fire) begin
                 aw_pending <= 0; w_pending <= 0; s_axi_bvalid <= 1; s_axi_bresp <= 0;
                 if (awaddr[1:0] != 0) s_axi_bresp <= 2'b10;
-                else if (awaddr[18]) begin
+                else if (awaddr >= 20'h40000 && awaddr < 20'ha0000) begin
                     if (!host_allowed) s_axi_bresp <= 2'b10;
-                end else begin
+                end else if (awaddr >= 20'h01000 && awaddr < 20'h01100) begin
+                    if (!host_allowed) s_axi_bresp <= 2'b10;
+                end else if (awaddr >= 20'h10000) s_axi_bresp <= 2'b10;
+                else begin
                     case (awaddr[15:0])
                         16'h0008: if (wstrb[0]) begin
                             if (wdata[1]) begin
@@ -192,11 +199,11 @@ module kv260_vortex_bram import VX_gpu_pkg::*; (
             end
             if (read_fire) begin
                 s_axi_rresp <= 0;
-                if (s_axi_araddr[1:0] != 0 || (s_axi_araddr[18] && !host_allowed)) begin
+                if (s_axi_araddr[1:0] != 0 || (s_axi_araddr >= 20'h40000 && !host_allowed) || s_axi_araddr >= 20'ha0000 || (s_axi_araddr >= 20'h10000 && s_axi_araddr < 20'h40000)) begin
                     s_axi_rvalid <= 1; s_axi_rresp <= 2'b10; s_axi_rdata <= 0;
-                end else if (s_axi_araddr[18]) read_pending <= 1;
+                end else if (s_axi_araddr >= 20'h40000) read_pending <= 1;
                 else begin
-                    s_axi_rdata <= (s_axi_araddr[17:8] == 10'h010) ? perf_rdata : read_register(s_axi_araddr[15:0]); s_axi_rvalid <= 1;
+                    s_axi_rdata <= (s_axi_araddr[19:8] == 12'h010) ? perf_rdata : read_register(s_axi_araddr[15:0]); s_axi_rvalid <= 1;
                 end
             end
         end

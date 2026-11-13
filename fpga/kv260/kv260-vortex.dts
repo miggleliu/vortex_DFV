@@ -1,7 +1,7 @@
 /dts-v1/;
 /plugin/;
 &fpga_full {
-    firmware-name = "kv260-vortex.bit.bin";
+    firmware-name = "kv260-vortex-int.bit.bin";
     resets = <&zynqmp_reset 116>;
 };
 &amba {
@@ -19,6 +19,6 @@
     };
     vortex@a0000000 {
         compatible = "research,kv260-vortex-bram";
-        reg = <0x0 0xa0000000 0x0 0x80000>;
+        reg = <0x0 0xa0000000 0x0 0x100000>;
     };
 };

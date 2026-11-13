@@ -36,7 +36,7 @@ public:
     }
     static int generate()
     {
-        return rand();
+        return (rand() % 17) - 8; // Bounded integer data avoids signed overflow.
     }
     static bool compare(int a, int b, int index, int errors)
     {

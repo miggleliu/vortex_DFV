@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <iostream>
+#include <cerrno>
 
 int get_profiling_mode();
 
@@ -52,6 +53,8 @@ static int dcr_initialize(vx_device_h hdevice) {
 
 static callbacks_t g_callbacks;
 static void* g_drv_handle = nullptr;
+
+#include "dfv_config.inc"
 
 typedef int (*vx_dev_init_t)(callbacks_t*);
 
@@ -88,6 +91,15 @@ extern int vx_dev_open(vx_device_h* hdevice) {
   });
 
   CHECK_ERR(dcr_initialize(_hdevice), {
+    g_callbacks.dev_close(_hdevice);
+    dlclose(g_drv_handle);
+    return err;
+  });
+
+  CHECK_ERR(dfv_initialize(_hdevice), {
+    std::cerr << "Cannot initialize DFV runtime configuration" << std::endl;
+    g_callbacks.dev_close(_hdevice);
+    dlclose(g_drv_handle);
     return err;
   });
 
@@ -98,6 +110,11 @@ extern int vx_dev_open(vx_device_h* hdevice) {
 
 extern int vx_dev_close(vx_device_h hdevice) {
   vx_dump_perf(hdevice, stdout);
+  auto state = dfv_states.find(hdevice);
+  if (state != dfv_states.end()) {
+    g_callbacks.mem_free(state->second.buffer);
+    dfv_states.erase(state);
+  }
   int ret = (g_callbacks.dev_close)(hdevice);
   dlclose(g_drv_handle);
   return ret;
@@ -146,11 +163,18 @@ extern int vx_start(vx_device_h hdevice, vx_buffer_h hkernel, vx_buffer_h hargum
       return err;
     });
   }
-  return (g_callbacks.start)(hdevice, hkernel, harguments);
+  CHECK_ERR(dfv_before_start(hdevice), { return err; });
+  int ret = (g_callbacks.start)(hdevice, hkernel, harguments);
+  if (!ret) dfv_states.at(hdevice).running = true;
+  return ret;
 }
 
 extern int vx_ready_wait(vx_device_h hdevice, uint64_t timeout) {
-  return (g_callbacks.ready_wait)(hdevice, timeout);
+  auto state = dfv_states.find(hdevice);
+  if (state == dfv_states.end()) return -1;
+  if (!state->second.running) return 0;
+  int ret = (g_callbacks.ready_wait)(hdevice, timeout);
+  return ret ? ret : dfv_after_wait(hdevice);
 }
 
 extern int vx_dcr_read(vx_device_h hdevice, uint32_t addr, uint32_t* value) {

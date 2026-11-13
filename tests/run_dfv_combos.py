@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run DFV stall injection tests across all regression apps.
 
-For each app, patches kernel.cpp to enable/disable stall types,
+For each app, supplies DFV controls at runtime through the shared host interface,
 runs the RTL simulation, preserves GPU CSR reports while trimming run.log,
 extracts PERF and type-specific metrics, and saves logs + CSV.
 """
@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 from dfv_csr import (CollisionReportError, FRAME_MARKER, SAMPLE_MARKER,
                      parse_observation_windows)
@@ -27,7 +28,7 @@ DEFAULT_CONFIGS = " ".join([
     "-DDCACHE_SIZE=4096",
     "-DDCACHE_NUM_BANKS=4",
     "-DPLATFORM_MEMORY_NUM_BANKS=1",
-    #"-DEXT_F_DISABLE" # for the FPGA-matched integer profile.
+    "-DEXT_F_DISABLE", # Integer-only FPGA/research profile.
 ])
 
 os.environ.setdefault("CONFIGS", DEFAULT_CONFIGS)
@@ -123,23 +124,29 @@ TEST_APPS = {
     "sgemm":      "-n8",
     "sgemm2":     "-n16",
     #"sgemm_tcu":  "-m8 -n8",
-    "sgemv":      "-m16 -n16",
+    # "sgemv":      "-m16 -n16",  # Disabled: requires GPU floating point.
     "sort":       "-n16",
     "stencil3d":  "-n4",
     "vecadd":     "-n64",
     "basic":      "-n16",
-    "conv3":      "-n8",
+    # "conv3":      "-n8",  # Disabled: requires GPU floating point.
     "cta":        "-x2 -y2 -z2 -a2 -b2 -c2",
     "demo":       "-n16",
     "diverge":    "-n16",
-    "dogfood":    "-n16",
-    "dotproduct": "-n64",
-    "dropout":    "-n64",
+    # "dogfood":    "-n16",  # Disabled: requires GPU floating point.
+    # "dotproduct": "-n64",  # Disabled: requires GPU floating point.
+    # "dropout":    "-n64",  # Disabled: requires GPU floating point.
     "fence":      "-n16",
     "io_addr":    "-n16",
-    "madmax":     "-n4",
-    "mstress":    "-n16",
+    # "madmax":     "-n4",  # Disabled: requires GPU floating point.
+    # "mstress":    "-n16",  # Disabled: requires GPU floating point.
 }
+
+
+# Apply the identical type to the host reference and GPU workload.
+INTEGER_TYPE_APPS = {'vecadd', 'relu', 'sgemm', 'sgemm2', 'stencil3d'}
+def app_configs(app):
+    return '-DTYPE=int' if app in INTEGER_TYPE_APPS else ''
 
 
 # =============================================================================
@@ -251,7 +258,7 @@ def trim_log(path, test_type=1, keep=200):
     except CollisionReportError as exc:
         error = str(exc)
         metrics, intervals, thresholds = {}, {}, {}
-    raw = lambda line: any(marker in line for marker in (FRAME_MARKER, SAMPLE_MARKER, 'DFV_CSR_ERROR'))
+    raw = lambda line: any(marker in line for marker in (FRAME_MARKER, SAMPLE_MARKER, 'DFV_CSR_ERROR', 'DFV_HOST_CSR'))
     tail = [line for line in lines[-keep:] if not raw(line)]
     tail += [line for line in lines if raw(line)]
     if error:
@@ -281,6 +288,8 @@ def main():
     parser.add_argument('--type', type=int, choices=(1, 2, 3), default=DFV_TEST_TYPE,
                         help='1 collision CSRs; 2 global throttle CSRs; 3 per-bank throttle CSRs')
     parser.add_argument('--apps', nargs='+', choices=sorted(TEST_APPS), default=list(TEST_APPS))
+    parser.add_argument('--csr', action='append', default=[], help='Runtime DFV override NAME=VALUE or ADDRESS=VALUE; repeatable')
+    parser.add_argument('--dfv-config', help='Runtime DFV overrides as a JSON object')
     parser.add_argument('--parse-log', help='Decode both CSR families without a Vortex build/SDK')
     args = parser.parse_args()
     if args.parse_log:
@@ -293,6 +302,11 @@ def main():
         return 0
     if not os.path.isdir(BUILD_DIR):
         parser.error(f'Configured Vortex build directory is missing: {BUILD_DIR}')
+    import dfv_host
+    try:
+        runtime_overrides = dfv_host.overrides(args.csr, args.dfv_config)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     combos = {1: COMBOS_TYPE1, 2: COMBOS_TYPE2, 3: COMBOS_TYPE3}[args.type]
     result_dir = os.path.join(LOG_BASE, f'dfv_type{args.type}')
     rows = []
@@ -303,10 +317,20 @@ def main():
             for combo in combos:
                 tag = combo_tag(combo)
                 print(f'\nRunning {app}/{tag}, DFV type {args.type}', flush=True)
-                patch_kernel(app, combo)
+                # Updated shared kernels consume host settings without a rebuild.
+                # Keep the source patcher only for legacy kernels/fixtures.
+                with open(kernel_path(app)) as kernel_source:
+                    dynamic = 'vx_dfv_apply_host_config' in kernel_source.read()
+                values = dfv_host.validate({**dfv_host.combo_values(combo, sys.modules[__name__]), **runtime_overrides})
+                if not dynamic:
+                    if runtime_overrides: parser.error(f'{app}: rebuild with the host DFV helper')
+                    patch_kernel(app, combo)
                 command = ['./ci/blackbox.sh', '--driver=rtlsim', f'--app={app}', f'--args={TEST_APPS[app]} -d']
                 with open(RUN_LOG, 'w') as stream:
-                    result = subprocess.run(command, cwd=BUILD_DIR, stdout=stream, stderr=subprocess.STDOUT)
+                    env = os.environ.copy()
+                    env['CONFIGS'] = env.get('CONFIGS', '') + ' ' + app_configs(app)
+                    if dynamic: env['VORTEX_DFV_CSRS'] = dfv_host.environment(values)
+                    result = subprocess.run(command, cwd=BUILD_DIR, env=env, stdout=stream, stderr=subprocess.STDOUT)
                 tail, windows, metrics, intervals, thresholds, error, mismatch = trim_log(RUN_LOG, args.type)
                 instrs, cycles, ipc = extract_perf(tail)
                 coverage = ''
@@ -321,6 +345,7 @@ def main():
                 shutil.move(RUN_LOG, path)
                 with open(path + '.csr.json', 'w') as stream:
                     json.dump({'status': status, 'csr_error': error, 'coverage': coverage,
+                               'host_csrs': {hex(k): v for k, v in values.items()},
                                'observations': [w.as_dict() for w in windows]}, stream, indent=2)
                 row = dict(app=app, stall_combo=tag, instrs=instrs, cycles=cycles, IPC=ipc,
                            status=status, coverage=coverage, csr_error=error)
