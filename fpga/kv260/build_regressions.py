@@ -143,6 +143,23 @@ def check_image(image, elf, objdump, nm, cfg):
     return {'min_vma':lo,'max_vma':hi,'file_bytes':len(data),
             'sha256':hashlib.sha256(data).hexdigest()}
 
+def install_app_makefile(source, case):
+    """Preserve app-specific rules, or generate rules for a simple app."""
+    original = source/'Makefile'
+    if original.is_file():
+        shutil.copyfile(original, case/'Makefile')
+        return
+    units = {p.name for p in source.iterdir()
+             if p.is_file() and p.suffix in {'.cpp', '.c', '.S'}}
+    if units != {'main.cpp', 'kernel.cpp'}:
+        raise FileNotFoundError(f'{source}: missing Makefile for nonstandard source set {sorted(units)}')
+    (case/'Makefile').write_text(
+        'include $(ROOT_DIR)/config.mk\n'
+        'PROJECT := '+case.name+'\n'
+        'SRCS := $(SRC_DIR)/main.cpp\n'
+        'VX_SRCS := $(SRC_DIR)/kernel.cpp\n'
+        'include ../common.mk\n')
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--build',type=Path,help='Configured RV32 Vortex build directory')
@@ -211,7 +228,7 @@ def main():
                 shutil.copyfile(p,source/p.name)
         # Use each original Makefile and checker; no substitute kernels or TYPE
         # changes. Each app is compiled once, independent of the DFV combinations.
-        shutil.copyfile(source/'Makefile',case/'Makefile')
+        install_app_makefile(source, case)
         subprocess.run(['make', f'ROOT_DIR={out}', f'SRC_DIR={source}',
                         f'CONFIGS={shlex.join(defs)} {combos.app_configs(app)}', f'CXX={a.host_cxx}',
                         app, 'kernel.vxbin'],cwd=case,check=True)
